@@ -1,10 +1,6 @@
 """
 app.py
 Interface Streamlit — Monitor de Phishing & Fake News
-Páginas:
-  1. Analisar Mensagem (com OCR de imagem, feedback, blacklist)
-  2. Pesquisar Número
-  3. Dashboard Estatístico (com filtros e gráfico temporal)
 """
 
 import streamlit as st
@@ -47,37 +43,40 @@ page = st.sidebar.selectbox(
 # ============================================================
 def generate_pdf(result: dict, message: str, phone_number: str = None) -> bytes:
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=50, rightMargin=50, topMargin=50, bottomMargin=50)
     styles = getSampleStyleSheet()
     story = []
 
-    title_style = ParagraphStyle("title", parent=styles["Title"], fontSize=18, spaceAfter=12)
-    heading_style = ParagraphStyle("heading", parent=styles["Heading2"], fontSize=13, spaceAfter=6)
-    normal_style = styles["Normal"]
+    title_style = ParagraphStyle("title", parent=styles["Title"], fontSize=18, spaceAfter=6, textColor=colors.HexColor("#1F3864"))
+    heading_style = ParagraphStyle("heading", parent=styles["Heading2"], fontSize=12, spaceAfter=4, textColor=colors.HexColor("#1F3864"))
+    normal_style = ParagraphStyle("normal", parent=styles["Normal"], fontSize=10, spaceAfter=4)
+    small_style = ParagraphStyle("small", parent=styles["Normal"], fontSize=9, textColor=colors.HexColor("#666666"))
 
-    story.append(Paragraph("Relatorio de Analise de Mensagem", title_style))
-    story.append(Paragraph(f"Data: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", normal_style))
-    story.append(Spacer(1, 12))
+    story.append(Paragraph("Relatório de Análise de Mensagem", title_style))
+    story.append(Paragraph("Sistema de Detecção de Links Maliciosos em Mensagens Digitais", small_style))
+    story.append(Spacer(1, 6))
+    story.append(Paragraph(f"Data de análise: {datetime.now().strftime('%d/%m/%Y às %H:%M:%S')}", small_style))
+    story.append(Spacer(1, 14))
 
     story.append(Paragraph("Mensagem Analisada", heading_style))
-    story.append(Paragraph(message[:500], normal_style))
+    story.append(Paragraph(message[:600] + ("..." if len(message) > 600 else ""), normal_style))
     story.append(Spacer(1, 8))
 
     if phone_number:
-        story.append(Paragraph(f"Numero reportado: {phone_number}", normal_style))
+        story.append(Paragraph(f"Número que enviou a mensagem: {phone_number}", normal_style))
         story.append(Spacer(1, 8))
 
-    story.append(Paragraph("Resultado da Analise", heading_style))
+    story.append(Paragraph("Resultado da Análise", heading_style))
     data = [
         ["Campo", "Valor"],
-        ["Nivel de Risco", result.get("risk_level", "-")],
-        ["Tipo de Conteudo", result.get("risk_type", "-")],
-        ["Pontuacao", str(result.get("score", 0))],
-        ["Numero na Blacklist", "Sim" if result.get("blacklisted") else "Nao"],
+        ["Nível de Risco", result.get("risk_level", "-")],
+        ["Tipo de Conteúdo", result.get("risk_type", "-")],
+        ["Pontuação", str(result.get("score", 0))],
+        ["Número na Blacklist", "Sim" if result.get("blacklisted") else "Não"],
     ]
     t = Table(data, colWidths=[200, 280])
     t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2c3e50")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F3864")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#f2f2f2"), colors.white]),
@@ -87,17 +86,55 @@ def generate_pdf(result: dict, message: str, phone_number: str = None) -> bytes:
     story.append(t)
     story.append(Spacer(1, 12))
 
-    story.append(Paragraph("Padroes Detectados", heading_style))
+    story.append(Paragraph("Padrões Detectados", heading_style))
     reasons = result.get("reasons", [])
     if reasons:
         for r in reasons:
-            story.append(Paragraph(f"- {r}", normal_style))
+            story.append(Paragraph(f"• {r}", normal_style))
     else:
-        story.append(Paragraph("Nenhum padrao suspeito detectado.", normal_style))
-
+        story.append(Paragraph("Nenhum padrão suspeito detectado.", normal_style))
     story.append(Spacer(1, 12))
+
+    link_results = result.get("link_results", {})
+    if link_results:
+        story.append(Paragraph("Links Verificados", heading_style))
+        for link, link_data in link_results.items():
+            if isinstance(link_data, dict):
+                status = link_data.get("status", "Desconhecido")
+            else:
+                status = str(link_data)
+            story.append(Paragraph(f"• {link} → {status}", normal_style))
+        story.append(Spacer(1, 12))
+
+    meta = result.get("meta", {})
+    if meta:
+        story.append(Paragraph("Análise Detalhada do Texto", heading_style))
+        meta_data = [
+            ["Indicador", "Valor"],
+            ["Proporção de maiúsculas", f"{int(meta.get('uppercase_ratio', 0) * 100)}%"],
+            ["Pontos de exclamação", str(meta.get("exclamations", 0))],
+            ["Emojis detectados", str(meta.get("emojis", 0))],
+            ["Scripts mistos", "Sim" if meta.get("mixed_scripts") else "Não"],
+        ]
+        t2 = Table(meta_data, colWidths=[200, 280])
+        t2.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F3864")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#f2f2f2"), colors.white]),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("PADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(t2)
+        story.append(Spacer(1, 12))
+
     story.append(Paragraph("Alerta Educativo", heading_style))
     story.append(Paragraph(result.get("educational_alert", ""), normal_style))
+    story.append(Spacer(1, 16))
+
+    story.append(Paragraph("___________________________________________", small_style))
+    story.append(Paragraph("Relatório gerado automaticamente pelo Sistema de Detecção de Links Maliciosos em Mensagens Digitais.", small_style))
+    story.append(Paragraph("Este documento destina-se exclusivamente a fins informativos e educativos.", small_style))
 
     doc.build(story)
     buffer.seek(0)
@@ -115,7 +152,6 @@ if page == "📄 Analisar Mensagem":
     promoções de apostas e fake news.
     """)
 
-    # --- Tabs: texto ou imagem ---
     tab1, tab2 = st.tabs(["✍️ Texto", "🖼️ Imagem (OCR)"])
 
     with tab1:
@@ -133,14 +169,14 @@ if page == "📄 Analisar Mensagem":
                 from PIL import Image
                 import pytesseract
                 image = Image.open(uploaded)
-                st.image(image, caption="Imagem carregada", use_column_width=True)
+                st.image(image, caption="Imagem carregada", width=400)
                 text_from_image = pytesseract.image_to_string(image, lang="por")
                 st.success("Texto extraído da imagem:")
                 st.code(text_from_image)
             except ImportError:
-                st.error("Para usar OCR instala: pip install pytesseract Pillow\nE também o Tesseract: brew install tesseract")
-            except Exception as e:
-                st.error(f"Erro ao processar imagem: {e}")
+                st.warning("⚠️ OCR não disponível neste ambiente. Para analisar imagens usa o site online.")
+            except Exception:
+                st.warning("⚠️ OCR não está disponível localmente. Para analisar imagens acede ao site online.")
 
         if text_from_image:
             text = text_from_image
@@ -160,17 +196,14 @@ if page == "📄 Analisar Mensagem":
             with st.spinner("A analisar..."):
                 result = analyze_message(final_text, phone_number=phone_number.strip() or None)
 
-            # Alerta de blacklist
             if result.get("blacklisted"):
                 st.error(f"🚫 ATENÇÃO: O número **{phone_number}** está na blacklist de números confirmadamente perigosos!")
 
-            # Métricas
             col1, col2, col3 = st.columns(3)
             col1.metric("Nível de Risco", result["risk_level"])
             col2.metric("Pontuação", result["score"])
             col3.metric("Tipo de Conteúdo", result["risk_type"])
 
-            # Aviso sobre número reportado anteriormente
             if phone_number.strip():
                 phone_data = lookup_phone(phone_number.strip())
                 if phone_data and phone_data["reputation"]["report_count"] > 1:
@@ -179,7 +212,6 @@ if page == "📄 Analisar Mensagem":
                 else:
                     st.info(f"📱 Número {phone_number} registado pela primeira vez.")
 
-            # Padrões
             st.subheader("🚩 Padrões Identificados")
             if result["reasons"]:
                 for r in result["reasons"]:
@@ -187,7 +219,6 @@ if page == "📄 Analisar Mensagem":
             else:
                 st.write("Nenhum padrão suspeito detectado.")
 
-            # Metadados
             with st.expander("🔬 Análise detalhada do texto"):
                 meta = result.get("meta", {})
                 m1, m2, m3, m4 = st.columns(4)
@@ -196,18 +227,29 @@ if page == "📄 Analisar Mensagem":
                 m3.metric("Emojis", meta.get("emojis", 0))
                 m4.metric("Scripts mistos", "Sim ⚠️" if meta.get("mixed_scripts") else "Não")
 
-            # Links
             if result["link_results"]:
                 st.subheader("🔗 Links Detectados")
-                for link, status in result["link_results"].items():
+                for link, link_data in result["link_results"].items():
+                    if isinstance(link_data, dict):
+                        status = link_data.get("status", "Desconhecido")
+                        threat = link_data.get("threat_type", "")
+                        is_wa = link_data.get("whatsapp_phishing", False)
+                    else:
+                        status = link_data
+                        threat = ""
+                        is_wa = False
+
                     if status == "Perigoso":
-                        st.error(f"🔴 {link} → {status}")
+                        st.error(f"🔴 **PERIGOSO** — {link}\n\n⚠️ Ameaça confirmada pelo Google Safe Browsing: `{threat}`")
+                    elif is_wa:
+                        st.error(f"🟠 **SUSPEITO — WhatsApp Phishing** — {link}\n\nEste tipo de link é usado para roubar dados via WhatsApp. Não cliques!")
+                    elif "Suspeito" in str(status):
+                        st.warning(f"🟡 Suspeito — {link} → {status}")
                     elif status == "Seguro":
-                        st.success(f"🟢 {link} → {status}")
+                        st.success(f"🟢 Seguro — {link}")
                     else:
                         st.warning(f"🟡 {link} → {status}")
 
-            # Avaliação final
             st.subheader("📢 Avaliação Final")
             if result["risk_level"] == "Alto":
                 st.error("🚨 ALTO risco. Não clique em links nem partilhe dados pessoais.")
@@ -221,7 +263,6 @@ if page == "📄 Analisar Mensagem":
             with st.expander("📚 Dica de Segurança"):
                 st.info(result["educational_alert"])
 
-            # --- Exportar PDF ---
             st.subheader("📄 Exportar Relatório")
             pdf_bytes = generate_pdf(result, final_text, phone_number.strip() or None)
             st.download_button(
@@ -231,7 +272,6 @@ if page == "📄 Analisar Mensagem":
                 mime="application/pdf",
             )
 
-            # --- Feedback ---
             st.subheader("💬 Esta análise foi correcta?")
             col_f1, col_f2 = st.columns(2)
             log_id = result.get("log_id")
@@ -247,7 +287,6 @@ if page == "📄 Analisar Mensagem":
                     save_feedback(log_id, correct=False, comment=comment)
                     st.warning("Feedback registado. Vamos melhorar!")
 
-            # --- Adicionar à blacklist ---
             if phone_number.strip():
                 st.subheader("🚫 Blacklist")
                 if is_blacklisted(phone_number.strip()):
@@ -275,7 +314,6 @@ elif page == "🔎 Pesquisar Número":
 
     if st.button("🔍 Pesquisar"):
         if search_number.strip():
-            # Verificar blacklist primeiro
             if is_blacklisted(search_number.strip()):
                 st.error(f"🚫 O número **{search_number}** está na **blacklist** de números confirmadamente perigosos!")
 
@@ -364,7 +402,6 @@ elif page == "📊 Dashboard Estatístico":
     else:
         df["date"] = pd.to_datetime(df["date"])
 
-        # --- Filtros ---
         st.subheader("🔍 Filtros")
         f1, f2, f3 = st.columns(3)
 
@@ -385,7 +422,6 @@ elif page == "📊 Dashboard Estatístico":
             max_date = df["date"].max().date()
             date_range = st.date_input("Período", value=(min_date, max_date))
 
-        # Aplicar filtros
         df_filtered = df[
             (df["risk_level"].isin(risk_filter)) &
             (df["risk_type"].isin(type_filter))
@@ -398,7 +434,6 @@ elif page == "📊 Dashboard Estatístico":
 
         st.divider()
 
-        # --- Métricas ---
         feedback_stats = get_feedback_stats()
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total de Análises", len(df_filtered))
@@ -409,7 +444,6 @@ elif page == "📊 Dashboard Estatístico":
 
         st.divider()
 
-        # --- Gráfico temporal ---
         st.subheader("📈 Evolução Temporal de Análises")
         df_time = df_filtered.copy()
         df_time["dia"] = df_time["date"].dt.date
@@ -442,7 +476,6 @@ elif page == "📊 Dashboard Estatístico":
             )
             st.plotly_chart(fig2, use_container_width=True)
 
-        # --- Tabela ---
         st.subheader("📌 Mensagens Registadas")
         df_sorted = df_filtered.sort_values("date", ascending=False)
         st.dataframe(
@@ -450,7 +483,6 @@ elif page == "📊 Dashboard Estatístico":
             use_container_width=True,
         )
 
-        # --- Exportar CSV ---
         csv = df_sorted.to_csv(index=False).encode("utf-8")
         st.download_button(
             label="⬇️ Exportar dados como CSV",
