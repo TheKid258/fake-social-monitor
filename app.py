@@ -166,17 +166,46 @@ if page == "📄 Analisar Mensagem":
         text_from_image = ""
         if uploaded:
             try:
-                from PIL import Image
+                from PIL import Image, ImageFilter, ImageEnhance
                 import pytesseract
+
                 image = Image.open(uploaded)
                 st.image(image, caption="Imagem carregada", width=400)
-                text_from_image = pytesseract.image_to_string(image, lang="por")
-                st.success("Texto extraído da imagem:")
-                st.code(text_from_image)
+
+                # Pré-processamento para melhorar OCR em imagens escuras (ex: WhatsApp dark mode)
+                # 1. Converte para escala de cinzento
+                gray = image.convert("L")
+
+                # 2. Aumenta contraste
+                gray = ImageEnhance.Contrast(gray).enhance(2.5)
+
+                # 3. Aumenta nitidez
+                gray = gray.filter(ImageFilter.SHARPEN)
+
+                # 4. Redimensiona para melhor leitura (Tesseract prefere imagens maiores)
+                w, h = gray.size
+                gray = gray.resize((w * 2, h * 2), Image.LANCZOS)
+
+                # 5. Tenta extrair com português e inglês
+                config = "--oem 3 --psm 6"
+                text_from_image = pytesseract.image_to_string(gray, lang="por+eng", config=config)
+
+                # Limpa texto extraído
+                text_from_image = "\n".join(
+                    line.strip() for line in text_from_image.splitlines()
+                    if len(line.strip()) > 3
+                )
+
+                if text_from_image.strip():
+                    st.success("✅ Texto extraído da imagem:")
+                    st.code(text_from_image)
+                else:
+                    st.warning("⚠️ Não foi possível extrair texto. Tenta com uma imagem mais nítida ou cola o texto manualmente no separador Texto.")
+
             except ImportError:
-                st.warning("⚠️ OCR não disponível neste ambiente. Para analisar imagens usa o site online.")
-            except Exception:
-                st.warning("⚠️ OCR não está disponível localmente. Para analisar imagens acede ao site online.")
+                st.warning("⚠️ OCR não disponível neste ambiente. Usa o site online para analisar imagens.")
+            except Exception as e:
+                st.warning(f"⚠️ Erro ao processar imagem: {e}. Tenta colar o texto manualmente no separador Texto.")
 
         if text_from_image:
             text = text_from_image
