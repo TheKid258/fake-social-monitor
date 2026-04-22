@@ -5,5 +5,6 @@ plotly
 python-dotenv
 reportlab
 Pillow
-pytesseractscikit-learn
+pytesseract
+scikit-learn
 numpy
