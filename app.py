@@ -370,112 +370,118 @@ if page == "📄 Analisar Mensagem":
             extracted_phone_from_image = ""
             if uploaded:
                 try:
-                    from PIL import Image, ImageFilter, ImageEnhance
+                    from PIL import Image, ImageEnhance
                     import numpy as np
                     import pytesseract
                     import re as _re
+                    import base64
+                    import json as _json
 
                     image = Image.open(uploaded)
                     st.image(image, caption="Imagem carregada", width=400)
 
-                    w, h = image.size
+                    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
 
                     # ------------------------------------------------
-                    # PASSO 1: Extrair número do cabeçalho
-                    # O cabeçalho do WhatsApp ocupa ~10-18% do topo da imagem
+                    # MÉTODO 1: Claude Vision API (melhor para dark mode)
                     # ------------------------------------------------
-                    header_crop = image.crop((0, 0, w, int(h * 0.18)))
-                    header_gray = header_crop.convert("L")
-                    header_gray = ImageEnhance.Contrast(header_gray).enhance(3.0)
-                    hw, hh = header_gray.size
-                    header_gray = header_gray.resize((hw * 3, hh * 3), Image.LANCZOS)
-                    header_text = pytesseract.image_to_string(header_gray, lang="por+eng", config="--oem 3 --psm 6")
+                    if anthropic_key:
+                        with st.spinner("🧠 A extrair texto com IA..."):
+                            try:
+                                uploaded.seek(0)
+                                img_bytes = uploaded.read()
+                                img_b64 = base64.b64encode(img_bytes).decode()
+                                ext = uploaded.name.split(".")[-1].lower()
+                                mime = "image/jpeg" if ext in ["jpg","jpeg"] else "image/png"
 
-                    # Tenta encontrar número de telefone no cabeçalho
-                    phone_match = _re.search(r"(\+?\d[\d\s\-]{7,15}\d)", header_text)
-                    if phone_match:
-                        extracted_phone_from_image = phone_match.group(1).strip()
+                                resp = requests.post(
+                                    "https://api.anthropic.com/v1/messages",
+                                    headers={
+                                        "x-api-key": anthropic_key,
+                                        "anthropic-version": "2023-06-01",
+                                        "content-type": "application/json"
+                                    },
+                                    json={
+                                        "model": "claude-sonnet-4-20250514",
+                                        "max_tokens": 500,
+                                        "messages": [{
+                                            "role": "user",
+                                            "content": [
+                                                {"type": "image", "source": {"type": "base64", "media_type": mime, "data": img_b64}},
+                                                {"type": "text", "text": "Esta é uma captura de ecrã do WhatsApp ou SMS. Extrai APENAS: 1) o número de telefone do remetente visível no cabeçalho, 2) o texto exacto da mensagem recebida (só o conteúdo da bolha, sem hora nem data). Responde SOMENTE em JSON válido sem markdown: {\"phone\": \"...\" , \"message\": \"...\"} . Se não encontrares um dos campos, usa string vazia."}
+                                            ]
+                                        }]
+                                    },
+                                    timeout=15
+                                )
 
-                    # ------------------------------------------------
-                    # PASSO 2: Recortar apenas a área da bolha da mensagem
-                    # Ignora: barra de status (topo ~8%), cabeçalho (~18%),
-                    # barra de data (~5%), barra de input (fundo ~12%)
-                    # A mensagem fica entre ~23% e ~78% da altura
-                    # ------------------------------------------------
-                    top_pct    = 0.23   # começa abaixo do cabeçalho e data
-                    bottom_pct = 0.80   # termina acima da barra de input
-                    left_pct   = 0.03   # margem esquerda
-                    right_pct  = 0.90   # margem direita (bolha não vai até à borda)
-
-                    msg_crop = image.crop((
-                        int(w * left_pct),
-                        int(h * top_pct),
-                        int(w * right_pct),
-                        int(h * bottom_pct),
-                    ))
-
-                    # ------------------------------------------------
-                    # PASSO 3: Pré-processamento para melhorar OCR
-                    # ------------------------------------------------
-                    # Converte para RGB para tratar fundos escuros (dark mode)
-                    msg_rgb = msg_crop.convert("RGB")
-                    pixels = np.array(msg_rgb)
-
-                    # Detecta se é dark mode: média de brilho < 80
-                    brightness = pixels.mean()
-                    if brightness < 80:
-                        # Inverte as cores para tornar texto claro em fundo escuro
-                        pixels = 255 - pixels
-                        msg_crop = Image.fromarray(pixels.astype(np.uint8))
-
-                    # Converte para cinzento e aumenta contraste
-                    msg_gray = msg_crop.convert("L")
-                    msg_gray = ImageEnhance.Contrast(msg_gray).enhance(2.5)
-                    msg_gray = ImageEnhance.Sharpness(msg_gray).enhance(2.0)
-
-                    # Redimensiona 2x para melhor leitura
-                    mw, mh = msg_gray.size
-                    msg_gray = msg_gray.resize((mw * 2, mh * 2), Image.LANCZOS)
+                                if resp.status_code == 200:
+                                    raw = resp.json()["content"][0]["text"].strip()
+                                    # Limpar possível markdown
+                                    raw = raw.replace("```json","").replace("```","").strip()
+                                    parsed = _json.loads(raw)
+                                    extracted_phone_from_image = parsed.get("phone","").strip()
+                                    text_from_image = parsed.get("message","").strip()
+                            except Exception:
+                                pass  # fallback para Tesseract
 
                     # ------------------------------------------------
-                    # PASSO 4: OCR na área recortada
+                    # MÉTODO 2: Tesseract (fallback se sem API ou erro)
                     # ------------------------------------------------
-                    config = "--oem 3 --psm 6"
-                    raw_text = pytesseract.image_to_string(msg_gray, lang="por+eng", config=config)
+                    if not text_from_image:
+                        w, h = image.size
+                        arr = np.array(image.convert("RGB"))
+
+                        # Extrair número do cabeçalho (top 20%)
+                        header = image.crop((0, 0, w, int(h * 0.20)))
+                        header_arr = 255 - np.array(header.convert("RGB"))
+                        header_img = Image.fromarray(header_arr.astype(np.uint8)).convert("L")
+                        header_img = ImageEnhance.Contrast(header_img).enhance(3.0)
+                        hw, hh = header_img.size
+                        header_img = header_img.resize((hw*3, hh*3), Image.LANCZOS)
+                        header_text = pytesseract.image_to_string(header_img, lang="por+eng", config="--oem 3 --psm 6")
+                        if not extracted_phone_from_image:
+                            pm = _re.search(r"(\+?\d[\d\s]{7,14}\d)", header_text)
+                            if pm:
+                                extracted_phone_from_image = pm.group(1).strip()
+
+                        # Extrair mensagem: zona central da imagem
+                        msg_crop = image.crop((int(w*0.03), int(h*0.28), int(w*0.90), int(h*0.78)))
+                        pixels = np.array(msg_crop.convert("RGB"))
+                        if pixels.mean() < 100:
+                            pixels = 255 - pixels
+                            msg_crop = Image.fromarray(pixels.astype(np.uint8))
+
+                        msg_gray = msg_crop.convert("L")
+                        msg_gray = ImageEnhance.Contrast(msg_gray).enhance(3.0)
+                        msg_gray = ImageEnhance.Sharpness(msg_gray).enhance(2.0)
+                        mw, mh = msg_gray.size
+                        msg_gray = msg_gray.resize((mw*3, mh*3), Image.LANCZOS)
+
+                        raw_text = pytesseract.image_to_string(msg_gray, lang="por+eng", config="--oem 3 --psm 6")
+
+                        skip_pats = [
+                            r"^\d{1,2}:\d{2}\s*(AM|PM)?$",
+                            r"^(sunday|monday|tuesday|wednesday|thursday|friday|saturday|domingo|segunda|terça|quarta|quinta|sexta|sábado)",
+                            r"^(january|february|march|april|may|june|july|august|september|october|november|december|janeiro|fevereiro|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)",
+                            r"^this message is from",
+                            r"^beware of smishing",
+                            r"^block number",
+                            r"^\+?[\d\s\-]{9,}$",
+                            r"^[^\w]*$",
+                            r"^.{1,3}$",
+                        ]
+                        clean = []
+                        for line in raw_text.splitlines():
+                            line = line.strip()
+                            if not line:
+                                continue
+                            if not any(_re.search(p, line, _re.IGNORECASE) for p in skip_pats):
+                                clean.append(line)
+                        text_from_image = "\n".join(clean).strip()
 
                     # ------------------------------------------------
-                    # PASSO 5: Limpar texto extraído
-                    # Remove linhas que são claramente metadados (hora, data, etc.)
-                    # ------------------------------------------------
-                    skip_patterns = [
-                        r"^\d{1,2}:\d{2}\s*(AM|PM)?$",           # horas: "6:43 AM"
-                        r"^(sunday|monday|tuesday|wednesday|thursday|friday|saturday)",  # dias
-                        r"^(janeiro|fevereiro|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)",
-                        r"^(january|february|march|april|may|june|july|august|september|october|november|december)",
-                        r"^this message is from",                  # aviso do WhatsApp
-                        r"^block number",                          # botão
-                        r"^\+?[\d\s\-]{9,}$",                     # só números (número de tel.)
-                        r"^[^\w]*$",                               # só símbolos/espaços
-                        r"^.{1,3}$",                               # linhas com menos de 4 chars
-                    ]
-
-                    clean_lines = []
-                    for line in raw_text.splitlines():
-                        line = line.strip()
-                        if not line:
-                            continue
-                        skip = False
-                        for pat in skip_patterns:
-                            if _re.search(pat, line, _re.IGNORECASE):
-                                skip = True
-                                break
-                        if not skip:
-                            clean_lines.append(line)
-
-                    text_from_image = "\n".join(clean_lines).strip()
-
-                    # ------------------------------------------------
-                    # PASSO 6: Mostrar resultados ao utilizador
+                    # Mostrar resultados
                     # ------------------------------------------------
                     if extracted_phone_from_image:
                         st.info(f"📱 Número detectado na imagem: **{extracted_phone_from_image}**")
@@ -484,12 +490,12 @@ if page == "📄 Analisar Mensagem":
                         st.success("✅ Mensagem extraída:")
                         st.code(text_from_image)
                     else:
-                        st.warning("⚠️ Não foi possível extrair o texto da mensagem. Tenta colar o texto manualmente no separador Texto.")
+                        st.warning("⚠️ Não foi possível extrair o texto. Cola o texto manualmente no separador Texto.")
 
                 except ImportError:
-                    st.warning("⚠️ OCR não disponível neste ambiente. Usa o site online para analisar imagens.")
+                    st.warning("⚠️ OCR não disponível neste ambiente.")
                 except Exception as e:
-                    st.warning(f"⚠️ Erro ao processar imagem: {e}. Tenta colar o texto manualmente.")
+                    st.warning(f"⚠️ Erro ao processar imagem: {e}. Cola o texto manualmente.")
 
         # Pré-preenche o número se foi detectado na imagem
         default_phone = extracted_phone_from_image if "extracted_phone_from_image" in dir() and extracted_phone_from_image else ""
