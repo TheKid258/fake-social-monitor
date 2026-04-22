@@ -4,6 +4,7 @@ Interface Streamlit — Monitor de Phishing & Fake News
 """
 
 import streamlit as st
+import requests
 from analyzer import analyze_message
 from database import (
     get_connection, lookup_phone, get_top_suspicious_numbers,
