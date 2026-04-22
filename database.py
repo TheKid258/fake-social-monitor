@@ -288,6 +288,70 @@ def get_top_suspicious_numbers(limit: int = 10) -> list:
         return []
 
 
+def get_training_data() -> tuple[list, list]:
+    """
+    Obtém dados de treino a partir dos logs com feedback positivo
+    e das análises com nível de risco definido.
+    Retorna (texts, labels) para treino dos modelos ML.
+    """
+    try:
+        init_db()
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        # Mensagens com feedback correcto
+        cursor.execute("""
+            SELECT l.message, l.risk_type
+            FROM logs l
+            INNER JOIN feedback f ON f.log_id = l.id
+            WHERE f.correct = 1
+            AND l.risk_type IS NOT NULL
+            AND l.risk_type != 'Desconhecido'
+            AND length(l.message) > 10
+        """)
+        rows_feedback = cursor.fetchall()
+
+        # Mensagens com alto risco (sem feedback — usadas como dados extra)
+        cursor.execute("""
+            SELECT message, risk_type FROM logs
+            WHERE risk_level IN ('Alto', 'Médio')
+            AND risk_type IS NOT NULL
+            AND risk_type != 'Desconhecido'
+            AND length(message) > 10
+            LIMIT 500
+        """)
+        rows_high = cursor.fetchall()
+
+        conn.close()
+
+        all_rows = list(set(rows_feedback + rows_high))
+        texts  = [r[0] for r in all_rows]
+        labels = [r[1] for r in all_rows]
+        return texts, labels
+
+    except Exception as e:
+        logger.error(f"Erro ao obter dados de treino: {e}")
+        return [], []
+    try:
+        init_db()
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*), SUM(correct) FROM feedback")
+        row = cursor.fetchone()
+        conn.close()
+        total = row[0] or 0
+        correct = row[1] or 0
+        return {
+            "total": total,
+            "correct": correct,
+            "incorrect": total - correct,
+            "accuracy": round((correct / total * 100), 1) if total > 0 else 0,
+        }
+    except Exception as e:
+        logger.error(f"Erro ao obter stats de feedback: {e}")
+        return {"total": 0, "correct": 0, "incorrect": 0, "accuracy": 0}
+
+
 def get_feedback_stats() -> dict:
     try:
         init_db()

@@ -7,17 +7,23 @@ import re
 import os
 import requests
 from dotenv import load_dotenv
+from urllib.parse import urlparse, parse_qs
+import math
 
 from database import save_analysis, is_blacklisted
 from text_utils import preprocess
+from ml_model import predict_all
 
 load_dotenv()
 API_KEY = os.getenv("GOOGLE_SAFE_BROWSING_API_KEY", "")
 
-SHORTENERS = r"(abre\.ai|bit\.ly|tinyurl|t\.co|is\.gd)"
+SHORTENERS = r"(abre\.ai|bit\.ly|tinyurl|t\.co|is\.gd|goo\.gl|ow\.ly|rb\.gy|cutt\.ly|shorturl\.at)"
 
 # Domínios suspeitos de apostas comuns em Moçambique
 SUSPICIOUS_DOMAINS = r"(apostasdemoz|apostas\w+\.com|bet\w+\.com|jogo\w+\.com|casino\w+\.com|play\w+\.mz)"
+
+# Links de grupo WhatsApp — muito usados em golpes de emprego
+WHATSAPP_GROUP_LINKS = r"(chat\.whatsapp\.com|wa\.me/|whatsapp\.com/send)"
 
 PATTERNS = {
     # Fake News / Desinformação
@@ -33,23 +39,34 @@ PATTERNS = {
     "Link externo":             (r"http[s]?://",                                                      1),
     "Domínio suspeito":         (SUSPICIOUS_DOMAINS,                                                  3),
 
+    # Golpe de emprego / Recrutamento falso
+    "Falsa oferta de emprego":  (r"(documentos aprovados|vaga aprovada|vaga reservada|candidatura aprovada|seleccionado|selecionado|recursos humanos|departamento de rh|rh contacto|entrar no grupo|grupo de trabalho|grupo de vagas|grupo whatsapp.*vaga|vaga.*grupo)", 3),
+    "Promessa de vaga":         (r"(vaga garantida|vaga disponivel|vaga aberta|lugar reservado|sua vaga|seu pedido foi aprovado|pedido aprovado|foi aprovado)", 3),
+    "Contacto suspeito de RH":  (r"(contacto.*\d{9}|\d{9}.*contacto|ligar para|enviar cv|enviar bi|enviar documentos|mandar documentos)", 2),
+    "Link de grupo WhatsApp":   (WHATSAPP_GROUP_LINKS,                                               4),
+    "Instruções suspeitas":     (r"(clique para entrar|entre no grupo|acesse o grupo|ultimas instrucoes|instruções do grupo|mais informacoes.*contacto)", 2),
+
     # Apostas / Aliciamento
     "Promoção de apostas":      (r"(aposta|jogo|casino|aviaozinho|jtx|bet|play|slot)",               2),
     "Incentivo a depósito":     (r"(deposita|carrega|investe|recarga)",                              2),
     "Promessa de ganho fácil":  (r"(ganha dinheiro|lucro garantido|dinheiro rapido|100%|funciona mesmo|ta funcionando|ta a funcionar)", 3),
     "Convite emocional":        (r"(venha se divertir|nao perca|aproveite|ve so|ve aqui|olha so)",   1),
 
-    # Manipulação social — NOVOS
+    # Manipulação social
     "Pedido de segredo":        (r"(nao conta|nao contar|nao diz|guardar segredo|entre nos|so nos|melhor nao contar|nao fala pra ninguem|nao fales a ninguem)", 3),
     "Validação social falsa":   (r"(funciona mesmo|ja tentei|ja usei|e verdade|testei|comprovado|confirmado|funciona de verdade)", 2),
     "Linguagem informal aliciante": (r"(bro|mano|parceiro|amigo|cara|ve so|olha so|acredita|confia)", 1),
     "Urgência informal":        (r"(ve o que ta|ve o que esta|acontecendo agora|agora mesmo|neste momento|so agora)", 2),
 
     # Spam
-    "Linguagem sensacionalista": (r"(!!!|💰|🔥|\$\$\$|😱|🤑)",                                      1),
+    "Linguagem sensacionalista": (r"(!!!|💰|🔥|\$\$\$|😱|🤑|⬇️)",                                  1),
 }
 
 RISK_CATEGORIES = {
+    "Golpe de Emprego / Recrutamento Falso": [
+        "Falsa oferta de emprego", "Promessa de vaga", "Contacto suspeito de RH",
+        "Link de grupo WhatsApp", "Instruções suspeitas"
+    ],
     "Apostas / Aliciamento Digital": [
         "Promoção de apostas", "Incentivo a depósito", "Promessa de ganho fácil",
         "Domínio suspeito"
@@ -66,25 +83,193 @@ RISK_CATEGORIES = {
     ],
 }
 
+# ============================================================
+# ANÁLISE HEURÍSTICA DE LINKS — camada independente da API
+# ============================================================
+
+# Domínios legítimos conhecidos (whitelist básica)
+TRUSTED_DOMAINS = {
+    "google.com", "google.co.mz", "youtube.com", "facebook.com",
+    "instagram.com", "twitter.com", "x.com", "linkedin.com",
+    "gov.mz", "mmo.co.mz", "vodacom.co.mz", "tmcel.co.mz",
+    "emola.co.mz", "mpesa.co.mz", "wikipedia.org", "github.com",
+    "microsoft.com", "apple.com", "amazon.com", "whatsapp.com",
+    "streamlit.app", "streamlit.io",
+}
+
+# Palavras-chave suspeitas em URLs
+SUSPICIOUS_URL_KEYWORDS = [
+    "login", "signin", "verify", "confirm", "secure", "update",
+    "account", "banking", "paypal", "mpesa", "emola", "mkesh",
+    "password", "senha", "credential", "free", "prize", "winner",
+    "click", "redirect", "token", "invite", "join", "promo",
+    "bonus", "offer", "win", "earn", "money", "cash", "reward",
+    "aposta", "casino", "bet", "slot", "play", "jogo",
+    "vaga", "emprego", "rh", "recrutamento", "contratando",
+]
+
+# Extensões de ficheiros perigosos
+DANGEROUS_EXTENSIONS = [
+    ".exe", ".apk", ".bat", ".cmd", ".scr", ".vbs",
+    ".zip", ".rar", ".js", ".jar", ".dmg",
+]
+
+# TLDs suspeitos frequentemente usados em phishing
+SUSPICIOUS_TLDS = [
+    ".xyz", ".tk", ".ml", ".ga", ".cf", ".gq", ".top",
+    ".click", ".link", ".work", ".date", ".party", ".loan",
+    ".download", ".stream", ".gdn", ".win",
+]
+
+
+def _calculate_url_entropy(url: str) -> float:
+    """Calcula a entropia de Shannon do URL — URLs gerados aleatoriamente têm alta entropia."""
+    if not url:
+        return 0.0
+    freq = {}
+    for c in url:
+        freq[c] = freq.get(c, 0) + 1
+    length = len(url)
+    entropy = -sum((count / length) * math.log2(count / length) for count in freq.values())
+    return round(entropy, 2)
+
+
+def analyze_url_heuristic(url: str) -> dict:
+    """
+    Análise heurística do URL sem depender de APIs externas.
+    Verifica estrutura, domínio, parâmetros, entropia e palavras-chave.
+    Retorna um dicionário com score de suspeita, razões e nível de risco.
+    """
+    result = {
+        "heuristic_score": 0,
+        "heuristic_reasons": [],
+        "heuristic_level": "Baixo",
+        "is_trusted": False,
+    }
+
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+        path = parsed.path.lower()
+        query = parsed.query.lower()
+        full_url_lower = url.lower()
+
+        # --- 1. Verificar se é domínio confiável ---
+        base_domain = ".".join(domain.split(".")[-2:]) if domain.count(".") >= 1 else domain
+        if base_domain in TRUSTED_DOMAINS:
+            result["is_trusted"] = True
+            result["heuristic_level"] = "Confiável"
+            return result
+
+        # --- 2. Protocolo HTTP (não HTTPS) ---
+        if parsed.scheme == "http":
+            result["heuristic_score"] += 2
+            result["heuristic_reasons"].append("Não usa HTTPS (conexão insegura)")
+
+        # --- 3. TLD suspeito ---
+        for tld in SUSPICIOUS_TLDS:
+            if domain.endswith(tld):
+                result["heuristic_score"] += 3
+                result["heuristic_reasons"].append(f"TLD suspeito: {tld}")
+                break
+
+        # --- 4. IP como domínio (em vez de nome) ---
+        if re.match(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", domain):
+            result["heuristic_score"] += 4
+            result["heuristic_reasons"].append("URL usa endereço IP em vez de domínio — sinal de phishing")
+
+        # --- 5. Domínio muito longo ou com muitos hífens ---
+        if len(domain) > 40:
+            result["heuristic_score"] += 2
+            result["heuristic_reasons"].append("Domínio excessivamente longo")
+        if domain.count("-") >= 3:
+            result["heuristic_score"] += 2
+            result["heuristic_reasons"].append("Domínio com muitos hífens — padrão comum em phishing")
+
+        # --- 6. Subdomínios excessivos (ex: secure.login.bank.xyz.com) ---
+        subdomain_count = domain.count(".") - 1
+        if subdomain_count >= 3:
+            result["heuristic_score"] += 2
+            result["heuristic_reasons"].append(f"Muitos subdomínios ({subdomain_count}) — padrão suspeito")
+
+        # --- 7. Palavras-chave suspeitas no URL ---
+        found_keywords = []
+        for kw in SUSPICIOUS_URL_KEYWORDS:
+            if kw in full_url_lower:
+                found_keywords.append(kw)
+        if found_keywords:
+            score_kw = min(len(found_keywords) * 2, 6)
+            result["heuristic_score"] += score_kw
+            result["heuristic_reasons"].append(f"Palavras suspeitas no URL: {', '.join(found_keywords[:5])}")
+
+        # --- 8. Extensão de ficheiro perigosa ---
+        for ext in DANGEROUS_EXTENSIONS:
+            if path.endswith(ext):
+                result["heuristic_score"] += 4
+                result["heuristic_reasons"].append(f"Link aponta para ficheiro perigoso ({ext})")
+                break
+
+        # --- 9. Muitos parâmetros na query string ---
+        params = parse_qs(query)
+        if len(params) >= 5:
+            result["heuristic_score"] += 2
+            result["heuristic_reasons"].append(f"Muitos parâmetros na URL ({len(params)}) — pode ser rastreamento ou redirecionamento")
+
+        # --- 10. Parâmetros suspeitos na query string ---
+        suspicious_params = ["token", "verify", "confirm", "redirect", "url", "goto", "next", "redir"]
+        found_params = [p for p in suspicious_params if p in params]
+        if found_params:
+            result["heuristic_score"] += 3
+            result["heuristic_reasons"].append(f"Parâmetros suspeitos: {', '.join(found_params)}")
+
+        # --- 11. Entropia alta (URL gerado aleatoriamente) ---
+        path_entropy = _calculate_url_entropy(path + query)
+        if path_entropy > 4.2:
+            result["heuristic_score"] += 2
+            result["heuristic_reasons"].append(f"URL com estrutura aleatória suspeita (entropia: {path_entropy})")
+
+        # --- 12. Link encurtador ---
+        shortener_pattern = re.compile(SHORTENERS)
+        if shortener_pattern.search(domain):
+            result["heuristic_score"] += 3
+            result["heuristic_reasons"].append("Serviço de encurtamento de links — destino real desconhecido")
+
+        # --- 13. Imitação de domínios conhecidos (typosquatting) ---
+        typosquat_targets = ["mpesa", "emola", "vodacom", "tmcel", "google", "facebook", "paypal", "banco"]
+        for target in typosquat_targets:
+            if target in domain and base_domain not in TRUSTED_DOMAINS:
+                result["heuristic_score"] += 4
+                result["heuristic_reasons"].append(f"Possível imitação de '{target}' (typosquatting)")
+                break
+
+        # --- Calcular nível final ---
+        score = result["heuristic_score"]
+        if score >= 8:
+            result["heuristic_level"] = "Alto Risco"
+        elif score >= 5:
+            result["heuristic_level"] = "Médio Risco"
+        elif score >= 2:
+            result["heuristic_level"] = "Baixo Risco"
+        else:
+            result["heuristic_level"] = "Aparentemente Seguro"
+
+    except Exception as e:
+        result["heuristic_reasons"].append(f"Erro na análise heurística: {e}")
+
+    return result
+
 
 def extract_links(text: str):
     return re.findall(r"http[s]?://\S+", text)
 
 
 def is_whatsapp_phishing(url: str) -> bool:
-    """
-    Detecta links de WhatsApp usados para phishing.
-    Padrões conhecidos:
-    - wa.me/<número> — links de convite directo para chat
-    - whatsapp.com/... — links suspeitos da plataforma
-    - links com parâmetros suspeitos como ?phone=, ?invite=
-    """
     suspicious_wa_patterns = [
-        r"wa\.me/\d+",                          # wa.me/258xxxxxxx
-        r"whatsapp\.com/send\?phone=",           # link de envio directo
-        r"api\.whatsapp\.com",                   # API não oficial
-        r"whatsapp.*\?(token|invite|join|verify|confirm|code)=",  # parâmetros suspeitos
-        r"wa\.me/.*\?text=",                     # link com texto pré-preenchido
+        r"wa\.me/\d+",
+        r"whatsapp\.com/send\?phone=",
+        r"api\.whatsapp\.com",
+        r"whatsapp.*\?(token|invite|join|verify|confirm|code)=",
+        r"wa\.me/.*\?text=",
     ]
     for pattern in suspicious_wa_patterns:
         if re.search(pattern, url.lower()):
@@ -94,27 +279,53 @@ def is_whatsapp_phishing(url: str) -> bool:
 
 def check_link_safety(url: str) -> dict:
     """
-    Verifica a segurança de um link usando Google Safe Browsing API.
-    Detecta também padrões de phishing de WhatsApp.
-    Retorna dict com status, tipo de ameaça e se é WhatsApp phishing.
+    Verificação completa de um link:
+    1. Análise heurística local (sempre executada)
+    2. Detecção de WhatsApp phishing
+    3. Google Safe Browsing API (se chave configurada)
+    
+    O resultado final combina as três camadas.
     """
+    # Camada 1: Heurística local
+    heuristic = analyze_url_heuristic(url)
+
     result = {
         "status": "Seguro",
         "threat_type": None,
         "whatsapp_phishing": False,
         "score_bonus": 0,
+        "heuristic_level": heuristic["heuristic_level"],
+        "heuristic_reasons": heuristic["heuristic_reasons"],
+        "heuristic_score": heuristic["heuristic_score"],
+        "is_trusted": heuristic.get("is_trusted", False),
     }
 
-    # Verificar padrões de WhatsApp phishing
+    # Se for domínio confiável, não precisa de verificações adicionais
+    if heuristic.get("is_trusted"):
+        result["status"] = "Confiável"
+        return result
+
+    # Aplicar score da heurística
+    h_score = heuristic["heuristic_score"]
+    if h_score >= 8:
+        result["status"] = "Suspeito — Alto Risco"
+        result["score_bonus"] = min(h_score, 6)
+    elif h_score >= 5:
+        result["status"] = "Suspeito — Médio Risco"
+        result["score_bonus"] = 3
+    elif h_score >= 2:
+        result["status"] = "Baixo Risco"
+        result["score_bonus"] = 1
+
+    # Camada 2: WhatsApp phishing
     if is_whatsapp_phishing(url):
         result["whatsapp_phishing"] = True
-        result["status"] = "Suspeito"
+        result["status"] = "Suspeito — WhatsApp Phishing"
         result["threat_type"] = "WhatsApp Phishing"
-        result["score_bonus"] = 4
+        result["score_bonus"] = max(result["score_bonus"], 4)
 
+    # Camada 3: Google Safe Browsing API
     if not API_KEY:
-        if result["status"] == "Seguro":
-            result["status"] = "API Key não configurada"
         return result
 
     endpoint = f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={API_KEY}"
@@ -139,11 +350,12 @@ def check_link_safety(url: str) -> dict:
         if "matches" in data:
             match = data["matches"][0]
             threat = match.get("threatType", "AMEAÇA DETECTADA")
+            # API confirmou — sobrepõe tudo com Perigoso
             result["status"] = "Perigoso"
             result["threat_type"] = threat
-            result["score_bonus"] = 5  # Link perigoso confirmado pela API eleva o score
+            result["score_bonus"] = 8  # Confirmado pela API — penalização máxima
     except Exception as e:
-        result["status"] = f"Erro: {e}"
+        result["api_error"] = str(e)
 
     return result
 
@@ -192,12 +404,12 @@ def calculate_risk_level(score: int, meta: dict) -> tuple[str, int]:
 
 def analyze_message(text: str, phone_number: str = None) -> dict:
     """
-    Pipeline completo de análise.
-    - Normaliza texto
-    - Detecta padrões com pesos
-    - Verifica blacklist
-    - Verifica links via Google Safe Browsing
-    - Resultado da API influencia directamente o score final
+    Pipeline completo de análise:
+    1. Normaliza texto
+    2. Detecta padrões com pesos
+    3. Verifica blacklist
+    4. Verifica links (heurística + WhatsApp + Google Safe Browsing)
+    5. Predição ML
     """
     meta = preprocess(text)
     normalized = meta["normalized"]
@@ -219,18 +431,19 @@ def analyze_message(text: str, phone_number: str = None) -> dict:
             if "Número na blacklist" not in detected_patterns:
                 detected_patterns.append("Número na blacklist")
 
-    # Verificar links — resultado da API influencia o score
+    # Verificar links — heurística + API
     link_results = {}
     for link in extract_links(text):
         link_check = check_link_safety(link)
         link_results[link] = link_check
 
-        # Se o link for perigoso ou WhatsApp phishing, eleva o score
         if link_check["score_bonus"] > 0:
             final_score += link_check["score_bonus"]
-            risk_level = "Alto"
+            if link_check["score_bonus"] >= 4:
+                risk_level = "Alto"
+            elif risk_level == "Nenhum":
+                risk_level = "Baixo"
 
-            # Adicionar padrão detectado
             if link_check["whatsapp_phishing"] and "Link de WhatsApp suspeito" not in detected_patterns:
                 detected_patterns.append("Link de WhatsApp suspeito")
                 risk_type = "Golpe Financeiro / Phishing"
@@ -239,12 +452,42 @@ def analyze_message(text: str, phone_number: str = None) -> dict:
                 detected_patterns.append("Link perigoso confirmado (Google Safe Browsing)")
                 risk_type = "Golpe Financeiro / Phishing"
 
-    educational_alert = (
-        "Mensagens com padrões suspeitos, links encurtados ou promessas de ganho fácil "
-        "são frequentemente associadas a golpes ou desinformação. "
-        "Nunca cliques em links de fontes desconhecidas nem partilhes dados pessoais. "
-        "Confirme sempre junto de fontes oficiais antes de qualquer ação."
-    )
+            if "Alto Risco" in str(link_check.get("status", "")) and "Link suspeito (análise heurística)" not in detected_patterns:
+                detected_patterns.append("Link suspeito (análise heurística)")
+
+    # Predição ML
+    ml_results = predict_all(normalized)
+    if ml_results.get("final_decision") and final_score < 4:
+        ml_decision = ml_results["final_decision"]
+        if ml_decision != "Baixo ou Nenhum Risco":
+            risk_type = ml_decision
+            final_score = max(final_score, 4)
+            risk_level = "Médio"
+            if "Padrão detectado pelo ML" not in detected_patterns:
+                detected_patterns.append("Padrão detectado pelo ML")
+
+    # Alerta educativo
+    if risk_type == "Golpe de Emprego / Recrutamento Falso":
+        educational_alert = (
+            "⚠️ ATENÇÃO: Este tipo de mensagem é um golpe de emprego muito comum! "
+            "Empresas legítimas NUNCA recrutam através de grupos de WhatsApp nem pedem "
+            "para clicar em links para 'entrar no grupo'. "
+            "Nunca envies os teus documentos (BI, CV) a desconhecidos. "
+            "Verifica sempre a empresa em fontes oficiais antes de qualquer contacto."
+        )
+    elif risk_type in ["Golpe Financeiro / Phishing", "Manipulação Social"]:
+        educational_alert = (
+            "⚠️ Esta mensagem apresenta características de phishing ou manipulação social. "
+            "Nunca cliques em links suspeitos nem partilhes dados pessoais ou bancários. "
+            "Confirme sempre junto de fontes oficiais antes de qualquer acção."
+        )
+    else:
+        educational_alert = (
+            "Mensagens com padrões suspeitos, links encurtados ou promessas de ganho fácil "
+            "são frequentemente associadas a golpes ou desinformação. "
+            "Nunca cliques em links de fontes desconhecidas nem partilhes dados pessoais. "
+            "Confirme sempre junto de fontes oficiais antes de qualquer ação."
+        )
 
     result = {
         "score": final_score,
@@ -254,6 +497,7 @@ def analyze_message(text: str, phone_number: str = None) -> dict:
         "educational_alert": educational_alert,
         "link_results": link_results,
         "blacklisted": blacklisted,
+        "ml_results": ml_results,
         "meta": {
             "uppercase_ratio": meta["uppercase_ratio"],
             "exclamations": meta["exclamations"],

@@ -8,8 +8,9 @@ from analyzer import analyze_message
 from database import (
     get_connection, lookup_phone, get_top_suspicious_numbers,
     save_feedback, add_to_blacklist, remove_from_blacklist,
-    get_blacklist, get_feedback_stats, is_blacklisted
+    get_blacklist, get_feedback_stats, is_blacklisted, get_training_data
 )
+from ml_model import train_models, get_model_status, should_auto_train
 import pandas as pd
 import plotly.express as px
 import os
@@ -26,16 +27,61 @@ st.set_page_config(
     page_icon="⚠️"
 )
 
+# ============================================================
+# INICIALIZAÇÃO DE SESSION STATE
+# ============================================================
+if "is_admin" not in st.session_state:
+    st.session_state["is_admin"] = False
+if "page_override" not in st.session_state:
+    st.session_state["page_override"] = None
+if "analysis_done" not in st.session_state:
+    st.session_state["analysis_done"] = False
+if "last_result" not in st.session_state:
+    st.session_state["last_result"] = None
+if "last_text" not in st.session_state:
+    st.session_state["last_text"] = ""
+if "last_phone" not in st.session_state:
+    st.session_state["last_phone"] = ""
+
+# ============================================================
+# SIDEBAR
+# ============================================================
 if not os.getenv("GOOGLE_SAFE_BROWSING_API_KEY"):
     st.sidebar.warning(
         "⚠️ API Key do Google Safe Browsing não configurada.\n\n"
         "Cria um ficheiro `.env` com `GOOGLE_SAFE_BROWSING_API_KEY=a_tua_chave`."
     )
 
-page = st.sidebar.selectbox(
-    "Navegação",
-    ["📄 Analisar Mensagem", "🔎 Pesquisar Número", "📊 Dashboard Estatístico"]
-)
+# Navegação principal
+nav_options = ["📄 Analisar Mensagem", "🔎 Pesquisar Número", "📊 Dashboard Estatístico"]
+selected_nav = st.sidebar.selectbox("Navegação", nav_options)
+
+# Acesso admin escondido
+with st.sidebar.expander("🔒 Acesso Admin"):
+    admin_input = st.text_input("Senha", type="password", key="admin_pw")
+    ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
+
+    if admin_input and admin_input != ADMIN_PASSWORD:
+        st.error("Senha incorrecta.")
+
+    if admin_input == ADMIN_PASSWORD and admin_input != "":
+        st.session_state["is_admin"] = True
+        st.success("✅ Acesso admin activo")
+        if st.button("🤖 Ir para Modelos ML"):
+            st.session_state["page_override"] = "🤖 Modelos ML"
+            st.rerun()
+
+# Determinar página activa:
+# O override só é limpo quando o utilizador muda o selectbox manualmente
+# enquanto já está fora da página ML (ou seja, saiu voluntariamente).
+if st.session_state.get("page_override") == "🤖 Modelos ML" and st.session_state.get("is_admin"):
+    page = "🤖 Modelos ML"
+else:
+    # Limpa override e admin apenas quando muda para "Analisar Mensagem" sem override activo
+    if selected_nav == "📄 Analisar Mensagem" and not st.session_state.get("page_override"):
+        st.session_state["is_admin"] = False
+    st.session_state["page_override"] = None
+    page = selected_nav
 
 
 # ============================================================
@@ -152,185 +198,324 @@ if page == "📄 Analisar Mensagem":
     promoções de apostas e fake news.
     """)
 
-    tab1, tab2 = st.tabs(["✍️ Texto", "🖼️ Imagem (OCR)"])
+    # Se acabou de ser feita uma análise, mostra os resultados e um botão para nova análise
+    if st.session_state["analysis_done"] and st.session_state["last_result"] is not None:
+        result = st.session_state["last_result"]
+        final_text = st.session_state["last_text"]
+        phone_number = st.session_state["last_phone"]
 
-    with tab1:
-        text = st.text_area(
-            "Cole aqui a mensagem suspeita...",
-            placeholder="Ex: URGENTE! Clique agora no link bit.ly/xxxxx e confirme os seus dados!",
-            height=180,
+        # Botão para limpar e fazer nova análise
+        if st.button("🔄 Nova Análise", type="primary"):
+            st.session_state["analysis_done"] = False
+            st.session_state["last_result"] = None
+            st.session_state["last_text"] = ""
+            st.session_state["last_phone"] = ""
+            st.rerun()
+
+        st.divider()
+
+        # --- Mostra resultados ---
+        if result.get("blacklisted"):
+            st.error(f"🚫 ATENÇÃO: O número **{phone_number}** está na blacklist de números confirmadamente perigosos!")
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Nível de Risco", result["risk_level"])
+        col2.metric("Pontuação", result["score"])
+        col3.metric("Tipo de Conteúdo", result["risk_type"])
+
+        if phone_number.strip():
+            phone_data = lookup_phone(phone_number.strip())
+            if phone_data and phone_data["reputation"]["report_count"] > 1:
+                count = phone_data["reputation"]["report_count"]
+                st.warning(f"📵 O número **{phone_number}** já foi reportado **{count}x** como: *{phone_data['reputation']['risk_type']}*")
+            else:
+                st.info(f"📱 Número {phone_number} registado pela primeira vez.")
+
+        st.subheader("🚩 Padrões Identificados")
+        if result["reasons"]:
+            for r in result["reasons"]:
+                st.write("•", r)
+        else:
+            st.write("Nenhum padrão suspeito detectado.")
+
+        with st.expander("🔬 Análise detalhada do texto"):
+            meta = result.get("meta", {})
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Maiúsculas", f"{int(meta.get('uppercase_ratio', 0) * 100)}%")
+            m2.metric("Exclamações", meta.get("exclamations", 0))
+            m3.metric("Emojis", meta.get("emojis", 0))
+            m4.metric("Scripts mistos", "Sim ⚠️" if meta.get("mixed_scripts") else "Não")
+
+        if result["link_results"]:
+            st.subheader("🔗 Links Detectados")
+            for link, link_data in result["link_results"].items():
+                if not isinstance(link_data, dict):
+                    st.warning(f"🟡 {link} → {link_data}")
+                    continue
+
+                status = link_data.get("status", "Desconhecido")
+                threat = link_data.get("threat_type", "")
+                is_wa = link_data.get("whatsapp_phishing", False)
+                is_trusted = link_data.get("is_trusted", False)
+                h_level = link_data.get("heuristic_level", "")
+                h_reasons = link_data.get("heuristic_reasons", [])
+                h_score = link_data.get("heuristic_score", 0)
+
+                # Mostrar card do link com detalhe completo
+                if status == "Perigoso":
+                    st.error(f"🔴 **PERIGOSO — confirmado pelo Google Safe Browsing**\n\n`{link}`\n\n⚠️ Tipo de ameaça: `{threat}`")
+
+                elif is_wa:
+                    st.error(f"🟠 **SUSPEITO — WhatsApp Phishing**\n\n`{link}`\n\nEste link é usado para roubar dados via WhatsApp. Nunca cliques!")
+
+                elif is_trusted:
+                    st.success(f"🟢 **Domínio confiável** — `{link}`")
+
+                elif "Alto Risco" in status:
+                    with st.expander(f"🔴 **Alto Risco** — `{link[:60]}{'...' if len(link)>60 else ''}`", expanded=True):
+                        st.error(f"**Nível heurístico:** {h_level} (pontuação: {h_score})")
+                        st.markdown("**Motivos detectados pela análise heurística:**")
+                        for reason in h_reasons:
+                            st.write(f"  ⚠️ {reason}")
+                        st.caption("ℹ️ Este link não foi confirmado pela API do Google, mas apresenta múltiplos sinais de risco. Não cliques.")
+
+                elif "Médio Risco" in status:
+                    with st.expander(f"🟠 **Médio Risco** — `{link[:60]}{'...' if len(link)>60 else ''}`"):
+                        st.warning(f"**Nível heurístico:** {h_level} (pontuação: {h_score})")
+                        if h_reasons:
+                            st.markdown("**Sinais detectados:**")
+                            for reason in h_reasons:
+                                st.write(f"  ⚠️ {reason}")
+                        st.caption("ℹ️ Procede com cautela. Verifica a fonte antes de clicar.")
+
+                elif "Baixo Risco" in status:
+                    with st.expander(f"🟡 **Baixo Risco** — `{link[:60]}{'...' if len(link)>60 else ''}`"):
+                        st.info(f"**Nível heurístico:** {h_level} (pontuação: {h_score})")
+                        if h_reasons:
+                            for reason in h_reasons:
+                                st.write(f"  ℹ️ {reason}")
+
+                else:
+                    st.success(f"🟢 **Aparentemente seguro** — `{link[:60]}{'...' if len(link)>60 else ''}`")
+                    if h_reasons:
+                        with st.expander("Ver detalhes"):
+                            for reason in h_reasons:
+                                st.write(f"  ℹ️ {reason}")
+
+        st.subheader("📢 Avaliação Final")
+        if result["risk_level"] == "Alto":
+            st.error("🚨 ALTO risco. Não clique em links nem partilhe dados pessoais.")
+        elif result["risk_level"] == "Médio":
+            st.warning("⚠️ Requer atenção. Verifique a fonte antes de agir.")
+        elif result["risk_level"] == "Baixo":
+            st.info("ℹ️ Risco baixo. Mantenha-se cauteloso.")
+        else:
+            st.success("✅ Nenhum padrão crítico identificado.")
+
+        with st.expander("📚 Dica de Segurança"):
+            st.info(result["educational_alert"])
+
+        st.subheader("📄 Exportar Relatório")
+        pdf_bytes = generate_pdf(result, final_text, phone_number.strip() or None)
+        st.download_button(
+            label="⬇️ Descarregar Relatório PDF",
+            data=pdf_bytes,
+            file_name=f"relatorio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+            mime="application/pdf",
         )
 
-    with tab2:
-        uploaded = st.file_uploader("Carrega uma imagem com a mensagem suspeita", type=["png", "jpg", "jpeg"])
-        text_from_image = ""
-        if uploaded:
-            try:
-                from PIL import Image, ImageFilter, ImageEnhance
-                import pytesseract
+        st.subheader("💬 Esta análise foi correcta?")
+        col_f1, col_f2 = st.columns(2)
+        log_id = result.get("log_id")
 
-                image = Image.open(uploaded)
-                st.image(image, caption="Imagem carregada", width=400)
+        with col_f1:
+            if st.button("✅ Sim, está correcta"):
+                save_feedback(log_id, correct=True)
+                st.success("Obrigado pelo feedback!")
 
-                # Pré-processamento para melhorar OCR em imagens escuras (ex: WhatsApp dark mode)
-                # 1. Converte para escala de cinzento
-                gray = image.convert("L")
+        with col_f2:
+            if st.button("❌ Não, está errada"):
+                comment = st.text_input("O que estava errado? (opcional)")
+                save_feedback(log_id, correct=False, comment=comment)
+                st.warning("Feedback registado. Vamos melhorar!")
 
-                # 2. Aumenta contraste
-                gray = ImageEnhance.Contrast(gray).enhance(2.5)
-
-                # 3. Aumenta nitidez
-                gray = gray.filter(ImageFilter.SHARPEN)
-
-                # 4. Redimensiona para melhor leitura (Tesseract prefere imagens maiores)
-                w, h = gray.size
-                gray = gray.resize((w * 2, h * 2), Image.LANCZOS)
-
-                # 5. Tenta extrair com português e inglês
-                config = "--oem 3 --psm 6"
-                text_from_image = pytesseract.image_to_string(gray, lang="por+eng", config=config)
-
-                # Limpa texto extraído
-                text_from_image = "\n".join(
-                    line.strip() for line in text_from_image.splitlines()
-                    if len(line.strip()) > 3
-                )
-
-                if text_from_image.strip():
-                    st.success("✅ Texto extraído da imagem:")
-                    st.code(text_from_image)
-                else:
-                    st.warning("⚠️ Não foi possível extrair texto. Tenta com uma imagem mais nítida ou cola o texto manualmente no separador Texto.")
-
-            except ImportError:
-                st.warning("⚠️ OCR não disponível neste ambiente. Usa o site online para analisar imagens.")
-            except Exception as e:
-                st.warning(f"⚠️ Erro ao processar imagem: {e}. Tenta colar o texto manualmente no separador Texto.")
-
-        if text_from_image:
-            text = text_from_image
-        elif "text" not in dir():
-            text = ""
-
-    phone_number = st.text_input(
-        "📱 Número que enviou a mensagem (opcional)",
-        placeholder="Ex: +258 84 123 4567",
-        help="Regista o número para identificá-lo em análises futuras.",
-    )
-
-    if st.button("🔍 Analisar"):
-        final_text = text if text.strip() else text_from_image if "text_from_image" in dir() else ""
-
-        if final_text.strip():
-            with st.spinner("A analisar..."):
-                result = analyze_message(final_text, phone_number=phone_number.strip() or None)
-
-            if result.get("blacklisted"):
-                st.error(f"🚫 ATENÇÃO: O número **{phone_number}** está na blacklist de números confirmadamente perigosos!")
-
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Nível de Risco", result["risk_level"])
-            col2.metric("Pontuação", result["score"])
-            col3.metric("Tipo de Conteúdo", result["risk_type"])
-
-            if phone_number.strip():
-                phone_data = lookup_phone(phone_number.strip())
-                if phone_data and phone_data["reputation"]["report_count"] > 1:
-                    count = phone_data["reputation"]["report_count"]
-                    st.warning(f"📵 O número **{phone_number}** já foi reportado **{count}x** como: *{phone_data['reputation']['risk_type']}*")
-                else:
-                    st.info(f"📱 Número {phone_number} registado pela primeira vez.")
-
-            st.subheader("🚩 Padrões Identificados")
-            if result["reasons"]:
-                for r in result["reasons"]:
-                    st.write("•", r)
+        if phone_number.strip():
+            st.subheader("🚫 Blacklist")
+            if is_blacklisted(phone_number.strip()):
+                st.warning(f"O número {phone_number} já está na blacklist.")
+                if st.button("🗑️ Remover da blacklist"):
+                    remove_from_blacklist(phone_number.strip())
+                    st.success("Removido da blacklist.")
             else:
-                st.write("Nenhum padrão suspeito detectado.")
+                if st.button("🚫 Adicionar número à blacklist"):
+                    reason = st.text_input("Motivo (opcional)", key="bl_reason")
+                    add_to_blacklist(phone_number.strip(), reason)
+                    st.success(f"Número {phone_number} adicionado à blacklist!")
 
-            with st.expander("🔬 Análise detalhada do texto"):
-                meta = result.get("meta", {})
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Maiúsculas", f"{int(meta.get('uppercase_ratio', 0) * 100)}%")
-                m2.metric("Exclamações", meta.get("exclamations", 0))
-                m3.metric("Emojis", meta.get("emojis", 0))
-                m4.metric("Scripts mistos", "Sim ⚠️" if meta.get("mixed_scripts") else "Não")
+    else:
+        # --- Formulário de análise (campo limpo) ---
+        tab1, tab2 = st.tabs(["✍️ Texto", "🖼️ Imagem (OCR)"])
 
-            if result["link_results"]:
-                st.subheader("🔗 Links Detectados")
-                for link, link_data in result["link_results"].items():
-                    if isinstance(link_data, dict):
-                        status = link_data.get("status", "Desconhecido")
-                        threat = link_data.get("threat_type", "")
-                        is_wa = link_data.get("whatsapp_phishing", False)
-                    else:
-                        status = link_data
-                        threat = ""
-                        is_wa = False
-
-                    if status == "Perigoso":
-                        st.error(f"🔴 **PERIGOSO** — {link}\n\n⚠️ Ameaça confirmada pelo Google Safe Browsing: `{threat}`")
-                    elif is_wa:
-                        st.error(f"🟠 **SUSPEITO — WhatsApp Phishing** — {link}\n\nEste tipo de link é usado para roubar dados via WhatsApp. Não cliques!")
-                    elif "Suspeito" in str(status):
-                        st.warning(f"🟡 Suspeito — {link} → {status}")
-                    elif status == "Seguro":
-                        st.success(f"🟢 Seguro — {link}")
-                    else:
-                        st.warning(f"🟡 {link} → {status}")
-
-            st.subheader("📢 Avaliação Final")
-            if result["risk_level"] == "Alto":
-                st.error("🚨 ALTO risco. Não clique em links nem partilhe dados pessoais.")
-            elif result["risk_level"] == "Médio":
-                st.warning("⚠️ Requer atenção. Verifique a fonte antes de agir.")
-            elif result["risk_level"] == "Baixo":
-                st.info("ℹ️ Risco baixo. Mantenha-se cauteloso.")
-            else:
-                st.success("✅ Nenhum padrão crítico identificado.")
-
-            with st.expander("📚 Dica de Segurança"):
-                st.info(result["educational_alert"])
-
-            st.subheader("📄 Exportar Relatório")
-            pdf_bytes = generate_pdf(result, final_text, phone_number.strip() or None)
-            st.download_button(
-                label="⬇️ Descarregar Relatório PDF",
-                data=pdf_bytes,
-                file_name=f"relatorio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-                mime="application/pdf",
+        with tab1:
+            text = st.text_area(
+                "Cole aqui a mensagem suspeita...",
+                placeholder="Ex: URGENTE! Clique agora no link bit.ly/xxxxx e confirme os seus dados!",
+                height=180,
+                key="msg_input",
             )
 
-            st.subheader("💬 Esta análise foi correcta?")
-            col_f1, col_f2 = st.columns(2)
-            log_id = result.get("log_id")
+        with tab2:
+            uploaded = st.file_uploader("Carrega uma imagem com a mensagem suspeita", type=["png", "jpg", "jpeg"])
+            text_from_image = ""
+            extracted_phone_from_image = ""
+            if uploaded:
+                try:
+                    from PIL import Image, ImageFilter, ImageEnhance
+                    import numpy as np
+                    import pytesseract
+                    import re as _re
 
-            with col_f1:
-                if st.button("✅ Sim, está correcta"):
-                    save_feedback(log_id, correct=True)
-                    st.success("Obrigado pelo feedback!")
+                    image = Image.open(uploaded)
+                    st.image(image, caption="Imagem carregada", width=400)
 
-            with col_f2:
-                if st.button("❌ Não, está errada"):
-                    comment = st.text_input("O que estava errado? (opcional)")
-                    save_feedback(log_id, correct=False, comment=comment)
-                    st.warning("Feedback registado. Vamos melhorar!")
+                    w, h = image.size
 
-            if phone_number.strip():
-                st.subheader("🚫 Blacklist")
-                if is_blacklisted(phone_number.strip()):
-                    st.warning(f"O número {phone_number} já está na blacklist.")
-                    if st.button("🗑️ Remover da blacklist"):
-                        remove_from_blacklist(phone_number.strip())
-                        st.success("Removido da blacklist.")
-                else:
-                    if st.button("🚫 Adicionar número à blacklist"):
-                        reason = st.text_input("Motivo (opcional)", key="bl_reason")
-                        add_to_blacklist(phone_number.strip(), reason)
-                        st.success(f"Número {phone_number} adicionado à blacklist!")
+                    # ------------------------------------------------
+                    # PASSO 1: Extrair número do cabeçalho
+                    # O cabeçalho do WhatsApp ocupa ~10-18% do topo da imagem
+                    # ------------------------------------------------
+                    header_crop = image.crop((0, 0, w, int(h * 0.18)))
+                    header_gray = header_crop.convert("L")
+                    header_gray = ImageEnhance.Contrast(header_gray).enhance(3.0)
+                    hw, hh = header_gray.size
+                    header_gray = header_gray.resize((hw * 3, hh * 3), Image.LANCZOS)
+                    header_text = pytesseract.image_to_string(header_gray, lang="por+eng", config="--oem 3 --psm 6")
 
-        else:
-            st.warning("Por favor, insira uma mensagem ou carregue uma imagem.")
+                    # Tenta encontrar número de telefone no cabeçalho
+                    phone_match = _re.search(r"(\+?\d[\d\s\-]{7,15}\d)", header_text)
+                    if phone_match:
+                        extracted_phone_from_image = phone_match.group(1).strip()
+
+                    # ------------------------------------------------
+                    # PASSO 2: Recortar apenas a área da bolha da mensagem
+                    # Ignora: barra de status (topo ~8%), cabeçalho (~18%),
+                    # barra de data (~5%), barra de input (fundo ~12%)
+                    # A mensagem fica entre ~23% e ~78% da altura
+                    # ------------------------------------------------
+                    top_pct    = 0.23   # começa abaixo do cabeçalho e data
+                    bottom_pct = 0.80   # termina acima da barra de input
+                    left_pct   = 0.03   # margem esquerda
+                    right_pct  = 0.90   # margem direita (bolha não vai até à borda)
+
+                    msg_crop = image.crop((
+                        int(w * left_pct),
+                        int(h * top_pct),
+                        int(w * right_pct),
+                        int(h * bottom_pct),
+                    ))
+
+                    # ------------------------------------------------
+                    # PASSO 3: Pré-processamento para melhorar OCR
+                    # ------------------------------------------------
+                    # Converte para RGB para tratar fundos escuros (dark mode)
+                    msg_rgb = msg_crop.convert("RGB")
+                    pixels = np.array(msg_rgb)
+
+                    # Detecta se é dark mode: média de brilho < 80
+                    brightness = pixels.mean()
+                    if brightness < 80:
+                        # Inverte as cores para tornar texto claro em fundo escuro
+                        pixels = 255 - pixels
+                        msg_crop = Image.fromarray(pixels.astype(np.uint8))
+
+                    # Converte para cinzento e aumenta contraste
+                    msg_gray = msg_crop.convert("L")
+                    msg_gray = ImageEnhance.Contrast(msg_gray).enhance(2.5)
+                    msg_gray = ImageEnhance.Sharpness(msg_gray).enhance(2.0)
+
+                    # Redimensiona 2x para melhor leitura
+                    mw, mh = msg_gray.size
+                    msg_gray = msg_gray.resize((mw * 2, mh * 2), Image.LANCZOS)
+
+                    # ------------------------------------------------
+                    # PASSO 4: OCR na área recortada
+                    # ------------------------------------------------
+                    config = "--oem 3 --psm 6"
+                    raw_text = pytesseract.image_to_string(msg_gray, lang="por+eng", config=config)
+
+                    # ------------------------------------------------
+                    # PASSO 5: Limpar texto extraído
+                    # Remove linhas que são claramente metadados (hora, data, etc.)
+                    # ------------------------------------------------
+                    skip_patterns = [
+                        r"^\d{1,2}:\d{2}\s*(AM|PM)?$",           # horas: "6:43 AM"
+                        r"^(sunday|monday|tuesday|wednesday|thursday|friday|saturday)",  # dias
+                        r"^(janeiro|fevereiro|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)",
+                        r"^(january|february|march|april|may|june|july|august|september|october|november|december)",
+                        r"^this message is from",                  # aviso do WhatsApp
+                        r"^block number",                          # botão
+                        r"^\+?[\d\s\-]{9,}$",                     # só números (número de tel.)
+                        r"^[^\w]*$",                               # só símbolos/espaços
+                        r"^.{1,3}$",                               # linhas com menos de 4 chars
+                    ]
+
+                    clean_lines = []
+                    for line in raw_text.splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        skip = False
+                        for pat in skip_patterns:
+                            if _re.search(pat, line, _re.IGNORECASE):
+                                skip = True
+                                break
+                        if not skip:
+                            clean_lines.append(line)
+
+                    text_from_image = "\n".join(clean_lines).strip()
+
+                    # ------------------------------------------------
+                    # PASSO 6: Mostrar resultados ao utilizador
+                    # ------------------------------------------------
+                    if extracted_phone_from_image:
+                        st.info(f"📱 Número detectado na imagem: **{extracted_phone_from_image}**")
+
+                    if text_from_image:
+                        st.success("✅ Mensagem extraída:")
+                        st.code(text_from_image)
+                    else:
+                        st.warning("⚠️ Não foi possível extrair o texto da mensagem. Tenta colar o texto manualmente no separador Texto.")
+
+                except ImportError:
+                    st.warning("⚠️ OCR não disponível neste ambiente. Usa o site online para analisar imagens.")
+                except Exception as e:
+                    st.warning(f"⚠️ Erro ao processar imagem: {e}. Tenta colar o texto manualmente.")
+
+        # Pré-preenche o número se foi detectado na imagem
+        default_phone = extracted_phone_from_image if "extracted_phone_from_image" in dir() and extracted_phone_from_image else ""
+        phone_number = st.text_input(
+            "📱 Número que enviou a mensagem (opcional)",
+            value=default_phone,
+            placeholder="Ex: +258 84 123 4567",
+            help="Preenchido automaticamente se detectado na imagem.",
+            key="phone_input",
+        )
+
+        if st.button("🔍 Analisar", type="primary"):
+            final_text = text if text.strip() else (text_from_image if "text_from_image" in dir() else "")
+
+            if final_text.strip():
+                with st.spinner("A analisar..."):
+                    result = analyze_message(final_text, phone_number=phone_number.strip() or None)
+
+                # Guarda resultado no session_state e faz refresh (limpa o campo)
+                st.session_state["analysis_done"] = True
+                st.session_state["last_result"] = result
+                st.session_state["last_text"] = final_text
+                st.session_state["last_phone"] = phone_number
+                st.rerun()
+            else:
+                st.warning("Por favor, insira uma mensagem ou carregue uma imagem.")
 
 
 # ============================================================
@@ -519,3 +704,94 @@ elif page == "📊 Dashboard Estatístico":
             file_name=f"analises_{datetime.now().strftime('%Y%m%d')}.csv",
             mime="text/csv",
         )
+
+
+# ============================================================
+# PÁGINA 4: Modelos ML (apenas admin)
+# ============================================================
+elif page == "🤖 Modelos ML":
+    st.title("🤖 Modelos de Machine Learning")
+    st.markdown("""
+    O sistema aprende automaticamente com as mensagens analisadas.
+    Quanto mais mensagens forem submetidas e avaliadas, mais preciso fica.
+    """)
+
+    status = get_model_status()
+    st.subheader("📊 Estado dos Modelos")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        nb_s = status["naive_bayes"]
+        if nb_s["trained"]:
+            st.success(f"✅ **Naive Bayes**\nTreinado: {nb_s['last_trained']}\nTamanho: {nb_s['size_kb']} KB")
+        else:
+            st.warning("⏳ **Naive Bayes**\nAinda não treinado")
+    with col2:
+        rf_s = status["random_forest"]
+        if rf_s["trained"]:
+            st.success(f"✅ **Random Forest**\nTreinado: {rf_s['last_trained']}\nTamanho: {rf_s['size_kb']} KB")
+        else:
+            st.warning("⏳ **Random Forest**\nAinda não treinado")
+    with col3:
+        st.info(f"🧠 **Claude (Anthropic)**\n{status['claude']['note']}")
+
+    st.divider()
+
+    texts, labels = get_training_data()
+    st.subheader("📚 Dados de Treino Disponíveis")
+    col_d1, col_d2 = st.columns(2)
+    col_d1.metric("Total de amostras", len(texts))
+    col_d2.metric("Mínimo necessário", status["min_samples"])
+
+    if len(texts) > 0:
+        from collections import Counter
+        label_counts = Counter(labels)
+        df_labels = pd.DataFrame(list(label_counts.items()), columns=["Tipo", "Quantidade"])
+        fig = px.bar(df_labels, x="Tipo", y="Quantidade", color="Tipo",
+                     color_discrete_sequence=px.colors.qualitative.Bold)
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+
+    st.subheader("⚙️ Treino Automático")
+    if len(texts) >= status["min_samples"]:
+        st.success(f"✅ Dados suficientes para treinar ({len(texts)} amostras).")
+        if should_auto_train(texts, labels):
+            st.info("🔄 O sistema vai treinar automaticamente na próxima análise.")
+    else:
+        faltam = status["min_samples"] - len(texts)
+        st.warning(f"⏳ Faltam **{faltam}** amostras. Continua a submeter e avaliar mensagens!")
+
+    st.divider()
+
+    st.subheader("🔧 Treino Manual")
+    if st.button("🚀 Treinar Modelos Agora"):
+        if len(texts) < status["min_samples"]:
+            st.error(f"❌ Dados insuficientes. Mínimo: {status['min_samples']}. Actual: {len(texts)}")
+        else:
+            with st.spinner("A treinar os modelos..."):
+                train_result = train_models(texts, labels)
+            if train_result["success"]:
+                st.success("✅ Modelos treinados com sucesso!")
+                for model_name, info in train_result["models"].items():
+                    if "accuracy" in info:
+                        st.metric(f"{model_name.replace('_', ' ').title()} — Precisão", f"{info['accuracy']}%")
+                    elif "error" in info:
+                        st.error(f"Erro em {model_name}: {info['error']}")
+            else:
+                st.error(f"❌ Erro: {train_result['error']}")
+
+    st.divider()
+
+    st.subheader("🔑 Configuração Claude API")
+    if os.getenv("ANTHROPIC_API_KEY"):
+        st.success("✅ ANTHROPIC_API_KEY configurada — Claude disponível para classificação.")
+    else:
+        st.warning("⚠️ ANTHROPIC_API_KEY não configurada. Adiciona no Streamlit Cloud em Settings → Secrets:\n```\nANTHROPIC_API_KEY = 'sk-ant-...'\n```")
+
+    st.divider()
+    # Botão para sair do modo admin
+    if st.button("🔓 Sair do modo Admin"):
+        st.session_state["is_admin"] = False
+        st.session_state["page_override"] = None
+        st.rerun()
