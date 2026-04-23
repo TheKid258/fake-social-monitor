@@ -428,13 +428,14 @@ if page == "📄 Analisar Mensagem":
 
                                 if resp.status_code == 200:
                                     raw = resp.json()["content"][0]["text"].strip()
-                                    # Limpar possível markdown
                                     raw = raw.replace("```json","").replace("```","").strip()
                                     parsed = _json.loads(raw)
                                     extracted_phone_from_image = parsed.get("phone","").strip()
                                     text_from_image = parsed.get("message","").strip()
+                                else:
+                                    st.error(f"❌ Erro API {resp.status_code}: {resp.text[:300]}")
                             except Exception as _vision_err:
-                                st.warning(f"⚠️ Claude Vision: {_vision_err}")
+                                st.error(f"⚠️ Excepção Claude Vision: {type(_vision_err).__name__}: {_vision_err}")
                                 # fallback para Tesseract
 
                     # ------------------------------------------------
