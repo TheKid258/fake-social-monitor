@@ -386,6 +386,14 @@ if page == "📄 Analisar Mensagem":
                     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
 
                     # ------------------------------------------------
+                    # DIAGNÓSTICO TEMPORÁRIO
+                    # ------------------------------------------------
+                    if anthropic_key:
+                        st.caption(f"🔑 Chave detectada: {anthropic_key[:12]}...")
+                    else:
+                        st.error("❌ ANTHROPIC_API_KEY não encontrada nas variáveis de ambiente.")
+
+                    # ------------------------------------------------
                     # MÉTODO 1: Claude Vision API (melhor para dark mode)
                     # ------------------------------------------------
                     if anthropic_key:
