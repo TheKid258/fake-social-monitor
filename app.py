@@ -435,10 +435,37 @@ if page == "📄 Analisar Mensagem":
                     # ------------------------------------------------
                     if not text_from_image:
                         w_img, h_img = image.size
-                        arr_full = np.array(image.convert("RGB"))
+                        arr_rgb = np.array(image.convert("RGB"))
 
-                        # --- Extrair número do cabeçalho (top 20%) ---
-                        header = image.crop((0, 0, w_img, int(h_img * 0.20)))
+                        # --- Detectar se é captura de browser ou imagem directa ---
+                        # Captura de browser: fundo branco/claro nas bordas
+                        # Imagem directa do WhatsApp: fundo escuro
+                        border_brightness = np.mean(arr_rgb[:50, :, :])
+                        is_browser_capture = border_brightness > 150
+
+                        if is_browser_capture:
+                            # Procurar zona escura (o telemóvel) dentro da imagem clara
+                            col_means = np.mean(arr_rgb, axis=(0, 2))
+                            row_means_all = np.mean(arr_rgb, axis=(1, 2))
+                            dark_cols = np.where(col_means < 130)[0]
+                            dark_rows = np.where(row_means_all < 130)[0]
+                            if len(dark_cols) > 10 and len(dark_rows) > 10:
+                                x1 = int(dark_cols[0])
+                                x2 = int(dark_cols[-1])
+                                y1 = int(dark_rows[0])
+                                y2 = int(dark_rows[-1])
+                                # Recortar só o telefone
+                                phone_img = image.crop((x1, y1, x2, y2))
+                            else:
+                                phone_img = image
+                        else:
+                            phone_img = image
+
+                        pw, ph = phone_img.size
+                        arr_phone = np.array(phone_img.convert("RGB"))
+
+                        # --- Extrair número do cabeçalho do telefone (top 20%) ---
+                        header = phone_img.crop((0, 0, pw, int(ph * 0.20)))
                         header_arr = 255 - np.array(header.convert("RGB"))
                         header_img = Image.fromarray(header_arr.astype(np.uint8)).convert("L")
                         header_img = ImageEnhance.Contrast(header_img).enhance(3.0)
@@ -451,39 +478,33 @@ if page == "📄 Analisar Mensagem":
                                 extracted_phone_from_image = pm.group(1).strip()
 
                         # --- Detectar bolha automaticamente por brilho ---
-                        # A bolha da mensagem tem brilho médio >= 45 no WhatsApp dark mode
-                        arr_rgb = np.array(image.convert("RGB"))
-                        row_means = np.mean(arr_rgb, axis=(1, 2))
-
+                        # Bolha WhatsApp dark mode: brilho médio 45-100
+                        row_means = np.mean(arr_phone, axis=(1, 2))
                         in_bubble = row_means >= 45
                         changes = np.diff(in_bubble.astype(int))
                         starts = np.where(changes == 1)[0] + 1
                         ends = np.where(changes == -1)[0] + 1
-
                         if len(starts) == 0 and in_bubble[0]:
                             starts = np.array([0])
                         if len(ends) == 0 and in_bubble[-1]:
-                            ends = np.array([h_img])
+                            ends = np.array([ph])
 
-                        # Encontrar o maior bloco contíguo (a bolha principal)
+                        # Maior bloco contíguo = bolha principal
                         best_start, best_end = 0, 0
                         for s, e in zip(starts, ends):
                             if e - s > best_end - best_start:
                                 best_start, best_end = s, e
 
                         if best_end > best_start + 30:
-                            # Recortar com margem de 25px acima para não cortar texto
                             margin = 25
-                            bubble_crop = image.crop((0, max(0, best_start - margin),
-                                                      w_img, min(h_img, best_end + margin)))
+                            bubble_crop = phone_img.crop((0, max(0, best_start - margin),
+                                                          pw, min(ph, best_end + margin)))
                             arr_b = np.array(bubble_crop.convert("RGB"))
                             arr_inv = 255 - arr_b
-                            bubble_inv = Image.fromarray(arr_inv.astype(np.uint8))
-                            msg_gray = bubble_inv.convert("L")
+                            msg_gray = Image.fromarray(arr_inv.astype(np.uint8)).convert("L")
                         else:
-                            # Fallback: zona central da imagem
-                            msg_crop = image.crop((int(w_img*0.03), int(h_img*0.28),
-                                                   int(w_img*0.90), int(h_img*0.78)))
+                            msg_crop = phone_img.crop((int(pw*0.03), int(ph*0.28),
+                                                       int(pw*0.90), int(ph*0.78)))
                             pixels = np.array(msg_crop.convert("RGB"))
                             if pixels.mean() < 100:
                                 pixels = 255 - pixels
