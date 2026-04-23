@@ -444,22 +444,24 @@ if page == "📄 Analisar Mensagem":
                         is_browser_capture = border_brightness > 150
 
                         if is_browser_capture:
-                            # Procurar zona escura (o telemóvel) dentro da imagem clara
                             col_means = np.mean(arr_rgb, axis=(0, 2))
                             row_means_all = np.mean(arr_rgb, axis=(1, 2))
                             dark_cols = np.where(col_means < 130)[0]
                             dark_rows = np.where(row_means_all < 130)[0]
+                            st.caption(f"🔍 Debug: browser={is_browser_capture}, brilho_borda={border_brightness:.0f}, dark_cols={len(dark_cols)}, dark_rows={len(dark_rows)}")
                             if len(dark_cols) > 10 and len(dark_rows) > 10:
                                 x1 = int(dark_cols[0])
                                 x2 = int(dark_cols[-1])
                                 y1 = int(dark_rows[0])
                                 y2 = int(dark_rows[-1])
-                                # Recortar só o telefone
                                 phone_img = image.crop((x1, y1, x2, y2))
+                                st.caption(f"📱 Telefone recortado: {phone_img.size}")
                             else:
                                 phone_img = image
+                                st.caption("⚠️ Telefone não detectado, usando imagem completa")
                         else:
                             phone_img = image
+                            st.caption(f"🔍 Debug: imagem directa, brilho_borda={border_brightness:.0f}")
 
                         pw, ph = phone_img.size
                         arr_phone = np.array(phone_img.convert("RGB"))
@@ -489,11 +491,12 @@ if page == "📄 Analisar Mensagem":
                         if len(ends) == 0 and in_bubble[-1]:
                             ends = np.array([ph])
 
-                        # Maior bloco contíguo = bolha principal
                         best_start, best_end = 0, 0
                         for s, e in zip(starts, ends):
                             if e - s > best_end - best_start:
                                 best_start, best_end = s, e
+
+                        st.caption(f"🫧 Bolha detectada: y={best_start}-{best_end} de {ph}px total")
 
                         if best_end > best_start + 30:
                             margin = 25
