@@ -386,15 +386,7 @@ if page == "📄 Analisar Mensagem":
                     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
 
                     # ------------------------------------------------
-                    # DIAGNÓSTICO TEMPORÁRIO
-                    # ------------------------------------------------
-                    if anthropic_key:
-                        st.caption(f"🔑 Chave detectada: {anthropic_key[:12]}...")
-                    else:
-                        st.error("❌ ANTHROPIC_API_KEY não encontrada nas variáveis de ambiente.")
-
-                    # ------------------------------------------------
-                    # MÉTODO 1: Claude Vision API (melhor para dark mode)
+                    # MÉTODO 1: Claude Vision API (se disponível)
                     # ------------------------------------------------
                     if anthropic_key:
                         with st.spinner("🧠 A extrair texto com IA..."):
@@ -439,14 +431,14 @@ if page == "📄 Analisar Mensagem":
                                 # fallback para Tesseract
 
                     # ------------------------------------------------
-                    # MÉTODO 2: Tesseract (fallback se sem API ou erro)
+                    # MÉTODO 2: Tesseract com detecção automática da bolha
                     # ------------------------------------------------
                     if not text_from_image:
-                        w, h = image.size
-                        arr = np.array(image.convert("RGB"))
+                        w_img, h_img = image.size
+                        arr_full = np.array(image.convert("RGB"))
 
-                        # Extrair número do cabeçalho (top 20%)
-                        header = image.crop((0, 0, w, int(h * 0.20)))
+                        # --- Extrair número do cabeçalho (top 20%) ---
+                        header = image.crop((0, 0, w_img, int(h_img * 0.20)))
                         header_arr = 255 - np.array(header.convert("RGB"))
                         header_img = Image.fromarray(header_arr.astype(np.uint8)).convert("L")
                         header_img = ImageEnhance.Contrast(header_img).enhance(3.0)
@@ -458,18 +450,50 @@ if page == "📄 Analisar Mensagem":
                             if pm:
                                 extracted_phone_from_image = pm.group(1).strip()
 
-                        # Extrair mensagem: zona central da imagem
-                        msg_crop = image.crop((int(w*0.03), int(h*0.28), int(w*0.90), int(h*0.78)))
-                        pixels = np.array(msg_crop.convert("RGB"))
-                        if pixels.mean() < 100:
-                            pixels = 255 - pixels
-                            msg_crop = Image.fromarray(pixels.astype(np.uint8))
+                        # --- Detectar bolha automaticamente por brilho ---
+                        # A bolha da mensagem tem brilho médio >= 45 no WhatsApp dark mode
+                        arr_rgb = np.array(image.convert("RGB"))
+                        row_means = np.mean(arr_rgb, axis=(1, 2))
 
-                        msg_gray = msg_crop.convert("L")
-                        msg_gray = ImageEnhance.Contrast(msg_gray).enhance(3.0)
+                        in_bubble = row_means >= 45
+                        changes = np.diff(in_bubble.astype(int))
+                        starts = np.where(changes == 1)[0] + 1
+                        ends = np.where(changes == -1)[0] + 1
+
+                        if len(starts) == 0 and in_bubble[0]:
+                            starts = np.array([0])
+                        if len(ends) == 0 and in_bubble[-1]:
+                            ends = np.array([h_img])
+
+                        # Encontrar o maior bloco contíguo (a bolha principal)
+                        best_start, best_end = 0, 0
+                        for s, e in zip(starts, ends):
+                            if e - s > best_end - best_start:
+                                best_start, best_end = s, e
+
+                        if best_end > best_start + 30:
+                            # Recortar com margem de 25px acima para não cortar texto
+                            margin = 25
+                            bubble_crop = image.crop((0, max(0, best_start - margin),
+                                                      w_img, min(h_img, best_end + margin)))
+                            arr_b = np.array(bubble_crop.convert("RGB"))
+                            arr_inv = 255 - arr_b
+                            bubble_inv = Image.fromarray(arr_inv.astype(np.uint8))
+                            msg_gray = bubble_inv.convert("L")
+                        else:
+                            # Fallback: zona central da imagem
+                            msg_crop = image.crop((int(w_img*0.03), int(h_img*0.28),
+                                                   int(w_img*0.90), int(h_img*0.78)))
+                            pixels = np.array(msg_crop.convert("RGB"))
+                            if pixels.mean() < 100:
+                                pixels = 255 - pixels
+                                msg_crop = Image.fromarray(pixels.astype(np.uint8))
+                            msg_gray = msg_crop.convert("L")
+
+                        msg_gray = ImageEnhance.Contrast(msg_gray).enhance(3.5)
                         msg_gray = ImageEnhance.Sharpness(msg_gray).enhance(2.0)
                         mw, mh = msg_gray.size
-                        msg_gray = msg_gray.resize((mw*3, mh*3), Image.LANCZOS)
+                        msg_gray = msg_gray.resize((mw*4, mh*4), Image.LANCZOS)
 
                         raw_text = pytesseract.image_to_string(msg_gray, lang="por+eng", config="--oem 3 --psm 6")
 
