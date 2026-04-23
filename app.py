@@ -425,8 +425,9 @@ if page == "📄 Analisar Mensagem":
                                     parsed = _json.loads(raw)
                                     extracted_phone_from_image = parsed.get("phone","").strip()
                                     text_from_image = parsed.get("message","").strip()
-                            except Exception:
-                                pass  # fallback para Tesseract
+                            except Exception as _vision_err:
+                                st.warning(f"⚠️ Claude Vision: {_vision_err}")
+                                # fallback para Tesseract
 
                     # ------------------------------------------------
                     # MÉTODO 2: Tesseract (fallback se sem API ou erro)
