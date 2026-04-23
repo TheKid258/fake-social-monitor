@@ -43,6 +43,8 @@ if "last_text" not in st.session_state:
     st.session_state["last_text"] = ""
 if "last_phone" not in st.session_state:
     st.session_state["last_phone"] = ""
+if "detected_phone" not in st.session_state:
+    st.session_state["detected_phone"] = ""
 
 # ============================================================
 # SIDEBAR
@@ -485,7 +487,10 @@ if page == "📄 Analisar Mensagem":
                     # Mostrar resultados
                     # ------------------------------------------------
                     if extracted_phone_from_image:
+                        st.session_state["detected_phone"] = extracted_phone_from_image
                         st.info(f"📱 Número detectado na imagem: **{extracted_phone_from_image}**")
+                    else:
+                        st.session_state["detected_phone"] = ""
 
                     if text_from_image:
                         st.success("✅ Mensagem extraída:")
@@ -498,11 +503,14 @@ if page == "📄 Analisar Mensagem":
                 except Exception as e:
                     st.warning(f"⚠️ Erro ao processar imagem: {e}. Cola o texto manualmente.")
 
-        # Pré-preenche o número se foi detectado na imagem
-        default_phone = extracted_phone_from_image if "extracted_phone_from_image" in dir() and extracted_phone_from_image else ""
+        # Pré-preenche o campo com número detectado via session_state
+        if st.session_state.get("detected_phone") and "phone_input" not in st.session_state:
+            st.session_state["phone_input"] = st.session_state["detected_phone"]
+        elif st.session_state.get("detected_phone") and st.session_state.get("phone_input") == "":
+            st.session_state["phone_input"] = st.session_state["detected_phone"]
+
         phone_number = st.text_input(
             "📱 Número que enviou a mensagem (opcional)",
-            value=default_phone,
             placeholder="Ex: +258 84 123 4567",
             help="Preenchido automaticamente se detectado na imagem.",
             key="phone_input",
