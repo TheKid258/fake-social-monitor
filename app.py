@@ -345,10 +345,8 @@ if page == "📄 Analisar Mensagem":
         if phone_number.strip():
             st.subheader("🚫 Blacklist")
             if is_blacklisted(phone_number.strip()):
-                st.warning(f"O número {phone_number} já está na blacklist.")
-                if st.button("🗑️ Remover da blacklist"):
-                    remove_from_blacklist(phone_number.strip())
-                    st.success("Removido da blacklist.")
+                st.error(f"🚫 O número **{phone_number}** está na blacklist de números perigosos.")
+                st.caption("Para remover da blacklist, contacte o administrador do sistema.")
             else:
                 if st.button("🚫 Adicionar número à blacklist"):
                     reason = st.text_input("Motivo (opcional)", key="bl_reason")
@@ -640,7 +638,7 @@ elif page == "🔎 Pesquisar Número":
     if top:
         df_top = pd.DataFrame(top)
         df_top.columns = ["Número", "Tipo de Fraude", "Nível de Risco", "Reports", "Último Report"]
-        st.dataframe(df_top, width="stretch")
+        st.dataframe(df_top, use_container_width=True)
     else:
         st.info("Ainda não há números registados.")
 
@@ -667,9 +665,21 @@ elif page == "🔎 Pesquisar Número":
                 with st.expander(f"🚫 {entry['phone_number']}"):
                     st.write(f"Motivo: {entry['reason'] or 'Não especificado'}")
                     st.caption(f"Adicionado em: {entry['date_added']}")
-                    if st.button("🗑️ Remover", key=f"rm_{entry['phone_number']}"):
-                        remove_from_blacklist(entry["phone_number"])
-                        st.rerun()
+                    # Remoção protegida por senha admin
+                    with st.container():
+                        admin_rem_pw = st.text_input(
+                            "🔒 Senha admin para remover",
+                            type="password",
+                            key=f"rm_pw_{entry['phone_number']}"
+                        )
+                        ADMIN_PW = os.getenv("ADMIN_PASSWORD", "admin123")
+                        if st.button("🗑️ Remover da blacklist", key=f"rm_{entry['phone_number']}"):
+                            if admin_rem_pw == ADMIN_PW:
+                                remove_from_blacklist(entry["phone_number"])
+                                st.success("Número removido da blacklist.")
+                                st.rerun()
+                            else:
+                                st.error("❌ Senha incorrecta. Não tem permissão para remover.")
         else:
             st.info("Blacklist vazia.")
 
@@ -742,7 +752,7 @@ elif page == "📊 Dashboard Estatístico":
                 color_discrete_map={"Alto": "#e74c3c", "Médio": "#f39c12", "Baixo": "#3498db", "Nenhum": "#2ecc71"},
                 labels={"dia": "Data", "count": "Nº de Análises", "risk_level": "Nível"},
             )
-            st.plotly_chart(fig_time, width="stretch")
+            st.plotly_chart(fig_time, use_container_width=True)
 
         col_g1, col_g2 = st.columns(2)
 
@@ -753,7 +763,7 @@ elif page == "📊 Dashboard Estatístico":
                 color_discrete_sequence=px.colors.qualitative.Bold,
                 category_orders={"risk_level": ["Nenhum", "Baixo", "Médio", "Alto"]},
             )
-            st.plotly_chart(fig1, width="stretch")
+            st.plotly_chart(fig1, use_container_width=True)
 
         with col_g2:
             st.subheader("📊 Distribuição por Tipo de Risco")
@@ -761,13 +771,13 @@ elif page == "📊 Dashboard Estatístico":
                 df_filtered, x="risk_type", color="risk_type", text_auto=True,
                 color_discrete_sequence=px.colors.qualitative.Prism,
             )
-            st.plotly_chart(fig2, width="stretch")
+            st.plotly_chart(fig2, use_container_width=True)
 
         st.subheader("📌 Mensagens Registadas")
         df_sorted = df_filtered.sort_values("date", ascending=False)
         st.dataframe(
             df_sorted[["date", "message", "risk_level", "risk_type", "score", "reasons", "phone_number"]],
-            width="stretch",
+            use_container_width=True,
         )
 
         csv = df_sorted.to_csv(index=False).encode("utf-8")
@@ -822,7 +832,7 @@ elif page == "🤖 Modelos ML":
         df_labels = pd.DataFrame(list(label_counts.items()), columns=["Tipo", "Quantidade"])
         fig = px.bar(df_labels, x="Tipo", y="Quantidade", color="Tipo",
                      color_discrete_sequence=px.colors.qualitative.Bold)
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
 
     st.divider()
 
