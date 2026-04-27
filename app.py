@@ -502,22 +502,28 @@ if page == "📄 Analisar Mensagem":
                             margin = 25
                             bubble_crop = phone_img.crop((0, max(0, best_start - margin),
                                                           pw, min(ph, best_end + margin)))
-                            arr_b = np.array(bubble_crop.convert("RGB"))
+                        else:
+                            # Fallback: zona central
+                            bubble_crop = phone_img.crop((int(pw*0.03), int(ph*0.20),
+                                                          int(pw*0.97), int(ph*0.90)))
+
+                        arr_b = np.array(bubble_crop.convert("RGB"))
+                        bubble_brightness = arr_b.mean()
+
+                        # Detectar light mode (bolha branca) vs dark mode (bolha cinzenta)
+                        if bubble_brightness > 120:
+                            # Light mode: texto escuro em fundo claro — não inverter
+                            msg_gray = bubble_crop.convert("L")
+                            msg_gray = ImageEnhance.Contrast(msg_gray).enhance(2.0)
+                        else:
+                            # Dark mode: texto claro em fundo escuro — inverter
                             arr_inv = 255 - arr_b
                             msg_gray = Image.fromarray(arr_inv.astype(np.uint8)).convert("L")
-                        else:
-                            msg_crop = phone_img.crop((int(pw*0.03), int(ph*0.28),
-                                                       int(pw*0.90), int(ph*0.78)))
-                            pixels = np.array(msg_crop.convert("RGB"))
-                            if pixels.mean() < 100:
-                                pixels = 255 - pixels
-                                msg_crop = Image.fromarray(pixels.astype(np.uint8))
-                            msg_gray = msg_crop.convert("L")
+                            msg_gray = ImageEnhance.Contrast(msg_gray).enhance(3.5)
 
-                        msg_gray = ImageEnhance.Contrast(msg_gray).enhance(3.5)
                         msg_gray = ImageEnhance.Sharpness(msg_gray).enhance(2.0)
                         mw, mh = msg_gray.size
-                        msg_gray = msg_gray.resize((mw*4, mh*4), Image.LANCZOS)
+                        msg_gray = msg_gray.resize((mw*3, mh*3), Image.LANCZOS)
 
                         raw_text = pytesseract.image_to_string(msg_gray, lang="por+eng", config="--oem 3 --psm 6")
 

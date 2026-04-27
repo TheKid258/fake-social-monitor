@@ -60,12 +60,22 @@ PATTERNS = {
 
     # Spam
     "Linguagem sensacionalista": (r"(!!!|💰|🔥|\$\$\$|😱|🤑|⬇️)",                                  1),
+
+    # Curanderismo / Golpe Tradicional
+    "Curandeiro / Médico tradicional": (r"(medico tradicional|curandeiro|feiticeiro|benzedor|pastor milagre|profeta|homem de deus|mulher de deus|pai de santo|mae de santo|espiritualismo|forca espiritual|poder espiritual|trabalho espiritual|oracoes poderosas)", 4),
+    "Promessa sobrenatural":    (r"(ficar rico em \d|dias sem matar|sorte magica|carteira magica|crteira magica|recuperar.*amado|trazer.*de volta|casamento de volta|amor de volta|ex de volta|unir casal|separar casal|amarracao|desamarracao|tirar feitico|quebrar feitico|tirar mau olhado|proteccao espiritual)", 4),
+    "Serviços mágicos suspeitos": (r"(sorte.*emprego|sorte.*negocio|sorte.*aposta|sorte.*jogo|apanhar ouro|pedras preciosas|ser famoso.*dias|recuperar bens roubados|faco tratamento|tratamento.*doencas|ligar whatsapp|asseguramento.*espiritual)", 3),
+    "Contacto de curandeiro":   (r"(ligar whatsapp|whatsapp.*tratamento|contacto.*curandeiro|\d{9}.*ligar|\d{9}.*whatsapp|whatsapp.*\d{9}|marcar consulta)", 3),
 }
 
 RISK_CATEGORIES = {
     "Golpe de Emprego / Recrutamento Falso": [
         "Falsa oferta de emprego", "Promessa de vaga", "Contacto suspeito de RH",
         "Link de grupo WhatsApp", "Instruções suspeitas"
+    ],
+    "Curanderismo / Golpe Tradicional": [
+        "Curandeiro / Médico tradicional", "Promessa sobrenatural",
+        "Serviços mágicos suspeitos", "Contacto de curandeiro"
     ],
     "Apostas / Aliciamento Digital": [
         "Promoção de apostas", "Incentivo a depósito", "Promessa de ganho fácil",
@@ -474,6 +484,15 @@ def analyze_message(text: str, phone_number: str = None) -> dict:
             "para clicar em links para 'entrar no grupo'. "
             "Nunca envies os teus documentos (BI, CV) a desconhecidos. "
             "Verifica sempre a empresa em fontes oficiais antes de qualquer contacto."
+        )
+    elif risk_type == "Curanderismo / Golpe Tradicional":
+        educational_alert = (
+            "⚠️ ATENÇÃO: Esta mensagem apresenta características de golpe de curanderismo! "
+            "Promessas de riqueza rápida, sorte, amor ou cura através de práticas espirituais "
+            "são esquemas para extorquir dinheiro de pessoas vulneráveis. "
+            "Nenhum 'médico tradicional' ou 'curandeiro' pode garantir riqueza, emprego ou amor. "
+            "Não contactes este número nem faças qualquer pagamento. "
+            "Em Moçambique podes denunciar à PRM (Polícia da República de Moçambique)."
         )
     elif risk_type in ["Golpe Financeiro / Phishing", "Manipulação Social"]:
         educational_alert = (
