@@ -213,6 +213,8 @@ if page == "📄 Analisar Mensagem":
             st.session_state["last_result"] = None
             st.session_state["last_text"] = ""
             st.session_state["last_phone"] = ""
+            st.session_state["detected_phone"] = ""
+            st.session_state["phone_input"] = ""
             st.rerun()
 
         st.divider()
