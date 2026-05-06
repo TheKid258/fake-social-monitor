@@ -57,6 +57,8 @@ if "last_phone" not in st.session_state:
     st.session_state["last_phone"] = ""
 if "detected_phone" not in st.session_state:
     st.session_state["detected_phone"] = ""
+if "ocr_text" not in st.session_state:
+    st.session_state["ocr_text"] = ""
 
 # ============================================================
 # SIDEBAR
@@ -227,6 +229,7 @@ if page == "📄 Analisar Mensagem":
             st.session_state["last_phone"] = ""
             st.session_state["detected_phone"] = ""
             st.session_state["phone_input"] = ""
+            st.session_state["ocr_text"] = ""
             st.rerun()
 
         st.divider()
@@ -569,10 +572,29 @@ if page == "📄 Analisar Mensagem":
                         st.session_state["detected_phone"] = ""
 
                     if text_from_image:
-                        st.success("✅ Mensagem extraída:")
-                        st.code(text_from_image)
+                        st.success("✅ Texto extraído — podes editar antes de analisar:")
+                        # Campo editável — utilizador pode corrigir erros do OCR
+                        text_from_image = st.text_area(
+                            "Texto extraído (editável)",
+                            value=text_from_image,
+                            height=150,
+                            key="ocr_text_edit",
+                            help="O OCR pode cometer erros. Corrige o texto se necessário antes de analisar."
+                        )
+                        st.session_state["ocr_text"] = text_from_image
                     else:
-                        st.warning("⚠️ Não foi possível extrair o texto. Cola o texto manualmente no separador Texto.")
+                        st.warning("⚠️ Não foi possível extrair o texto automaticamente.")
+                        st.info("💡 Podes copiar o texto da imagem e colá-lo no separador **✍️ Texto** para analisar.")
+                        # Permitir escrita manual mesmo no tab de imagem
+                        manual_text = st.text_area(
+                            "Ou escreve/cola o texto da mensagem aqui:",
+                            height=150,
+                            key="ocr_manual_fallback",
+                            placeholder="Cola aqui o texto da mensagem que vês na imagem..."
+                        )
+                        if manual_text.strip():
+                            text_from_image = manual_text
+                            st.session_state["ocr_text"] = manual_text
 
                 except ImportError:
                     st.warning("⚠️ OCR não disponível neste ambiente.")
@@ -593,7 +615,16 @@ if page == "📄 Analisar Mensagem":
         )
 
         if st.button("🔍 Analisar", type="primary"):
-            final_text = text if text.strip() else (text_from_image if "text_from_image" in dir() else "")
+            # Prioridade: texto manual > texto do OCR editado > texto da tab de texto
+            ocr_text = st.session_state.get("ocr_text", "")
+            if text.strip():
+                final_text = text
+            elif ocr_text.strip():
+                final_text = ocr_text
+            elif "text_from_image" in dir() and text_from_image and text_from_image.strip():
+                final_text = text_from_image
+            else:
+                final_text = ""
 
             if final_text.strip():
                 with st.spinner("A analisar..."):
