@@ -35,6 +35,73 @@ def _get_supabase():
         return None
 
 
+def init_supabase_tables():
+    """
+    Cria tabelas e colunas em falta no Supabase automaticamente.
+    Usa a service_role key para ter permissão de DDL.
+    """
+    url = os.getenv("SUPABASE_URL", "")
+    # Tenta service key primeiro, fallback para anon key
+    key = os.getenv("SUPABASE_SERVICE_KEY", os.getenv("SUPABASE_KEY", ""))
+    if not url or not key:
+        return
+
+    sql_statements = [
+        # Criar tabelas
+        """CREATE TABLE IF NOT EXISTS logs (
+            id SERIAL PRIMARY KEY, message TEXT, risk_level TEXT,
+            risk_type TEXT, score INTEGER, reasons TEXT, date TEXT,
+            link_results TEXT, educational_alert TEXT,
+            uppercase_ratio REAL, exclamations INTEGER,
+            emojis INTEGER, mixed_scripts INTEGER, phone_number TEXT
+        )""",
+        """CREATE TABLE IF NOT EXISTS phone_numbers (
+            id SERIAL PRIMARY KEY, phone_number TEXT UNIQUE,
+            risk_type TEXT, risk_level TEXT, report_count INTEGER DEFAULT 1,
+            first_seen TEXT, last_seen TEXT
+        )""",
+        """CREATE TABLE IF NOT EXISTS blacklist (
+            id SERIAL PRIMARY KEY, phone_number TEXT UNIQUE NOT NULL,
+            reason TEXT, date_added TEXT
+        )""",
+        """CREATE TABLE IF NOT EXISTS feedback (
+            id SERIAL PRIMARY KEY, log_id INTEGER,
+            correct INTEGER, comment TEXT, date TEXT
+        )""",
+        # Adicionar colunas em falta (IF NOT EXISTS no PostgreSQL)
+        "ALTER TABLE logs ADD COLUMN IF NOT EXISTS educational_alert TEXT",
+        "ALTER TABLE logs ADD COLUMN IF NOT EXISTS uppercase_ratio REAL",
+        "ALTER TABLE logs ADD COLUMN IF NOT EXISTS exclamations INTEGER",
+        "ALTER TABLE logs ADD COLUMN IF NOT EXISTS emojis INTEGER",
+        "ALTER TABLE logs ADD COLUMN IF NOT EXISTS mixed_scripts INTEGER",
+        "ALTER TABLE logs ADD COLUMN IF NOT EXISTS phone_number TEXT",
+        "ALTER TABLE logs ADD COLUMN IF NOT EXISTS link_results TEXT",
+        "ALTER TABLE blacklist ADD COLUMN IF NOT EXISTS date_added TEXT",
+    ]
+
+    import requests as _req
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+
+    for sql in sql_statements:
+        try:
+            resp = _req.post(
+                f"{url}/rest/v1/rpc/exec_sql",
+                headers=headers,
+                json={"query": sql},
+                timeout=10,
+            )
+            # Se exec_sql não existir, tenta endpoint alternativo
+            if resp.status_code == 404:
+                break
+        except Exception as e:
+            logger.error(f"Erro init tabela Supabase: {e}")
+            break
+
+
 # ============================================================
 # SQLITE — INICIALIZAÇÃO
 # ============================================================
@@ -121,9 +188,14 @@ def init_db():
 
 def sync_from_supabase():
     """
-    Ao iniciar, copia os dados do Supabase para o SQLite local.
+    Ao iniciar:
+    1. Cria tabelas no Supabase se não existirem
+    2. Copia dados do Supabase para SQLite local
     Assim mesmo que o Streamlit reinicie, os dados são restaurados.
     """
+    # Primeiro garantir que as tabelas existem no Supabase
+    init_supabase_tables()
+
     sb = _get_supabase()
     if not sb:
         return
