@@ -31,6 +31,13 @@ st.set_page_config(
 # ============================================================
 # INICIALIZAÇÃO DE SESSION STATE
 # ============================================================
+# Sincronizar dados do Supabase para SQLite ao arrancar
+from database import sync_from_supabase
+try:
+    sync_from_supabase()
+except Exception:
+    pass
+
 if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
 if "page_override" not in st.session_state:
