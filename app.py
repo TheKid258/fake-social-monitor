@@ -406,9 +406,12 @@ if page == "📄 Analisar Mensagem":
                     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
 
                     # ------------------------------------------------
-                    # MÉTODO 1: Gemini Vision (gratuito, melhor qualidade)
+                    # MÉTODO 1: Gemini Vision via Google Cloud
+                    # Usa a mesma chave do Safe Browsing ou chave Gemini dedicada
                     # ------------------------------------------------
-                    if gemini_key and not text_from_image:
+                    # Tenta chave dedicada Gemini, fallback para chave Google Cloud
+                    _gemini_api_key = gemini_key or os.getenv("GOOGLE_SAFE_BROWSING_API_KEY", "")
+                    if _gemini_api_key and not text_from_image:
                         with st.spinner("🧠 A extrair texto com Gemini IA..."):
                             try:
                                 uploaded.seek(0)
@@ -417,35 +420,56 @@ if page == "📄 Analisar Mensagem":
                                 ext = uploaded.name.split(".")[-1].lower()
                                 mime = "image/jpeg" if ext in ["jpg","jpeg"] else "image/png"
 
-                                resp = requests.post(
-                                    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}",
-                                    headers={"Content-Type": "application/json"},
-                                    json={
-                                        "contents": [{
-                                            "parts": [
-                                                {
-                                                    "inline_data": {
-                                                        "mime_type": mime,
-                                                        "data": img_b64
-                                                    }
-                                                },
-                                                {
-                                                    "text": 'Esta é uma imagem do WhatsApp ou SMS. Extrai APENAS: 1) o número de telefone do remetente visível no cabeçalho, 2) o texto exacto da mensagem recebida (só o conteúdo da bolha da conversa, sem hora, data, avisos do sistema ou outros elementos). Responde SOMENTE em JSON válido sem markdown: {"phone": "...", "message": "..."} . Se não encontrares um dos campos, usa string vazia.'
-                                                }
-                                            ]
-                                        }],
-                                        "generationConfig": {"maxOutputTokens": 500, "temperature": 0}
-                                    },
-                                    timeout=20
+                                _prompt = (
+                                    'Esta é uma imagem do WhatsApp ou SMS. '
+                                    'Extrai APENAS: 1) o número de telefone do remetente visível no cabeçalho, '
+                                    '2) o texto exacto da mensagem recebida (só o conteúdo da bolha da conversa, '
+                                    'sem hora, data, avisos do sistema ou outros elementos). '
+                                    'Responde SOMENTE em JSON válido sem markdown: '
+                                    '{"phone": "...", "message": "..."} . '
+                                    'Se não encontrares um dos campos, usa string vazia.'
                                 )
 
-                                if resp.status_code == 200:
+                                # Tentar primeiro com v1 (mais estável)
+                                _endpoints = [
+                                    f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={_gemini_api_key}",
+                                    f"https://generativelanguage.googleapis.com/v1/models/gemini-pro-vision:generateContent?key={_gemini_api_key}",
+                                    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={_gemini_api_key}",
+                                ]
+
+                                resp = None
+                                for _ep in _endpoints:
+                                    try:
+                                        resp = requests.post(
+                                            _ep,
+                                            headers={"Content-Type": "application/json"},
+                                            json={
+                                                "contents": [{
+                                                    "parts": [
+                                                        {"inline_data": {"mime_type": mime, "data": img_b64}},
+                                                        {"text": _prompt}
+                                                    ]
+                                                }],
+                                                "generationConfig": {"maxOutputTokens": 500, "temperature": 0}
+                                            },
+                                            timeout=20
+                                        )
+                                        if resp.status_code == 200:
+                                            break
+                                        elif resp.status_code in (429, 404):
+                                            resp = None
+                                            continue
+                                    except Exception:
+                                        resp = None
+                                        continue
+
+                                if resp and resp.status_code == 200:
                                     raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
                                     raw = raw.replace("```json","").replace("```","").strip()
                                     parsed = _json.loads(raw)
                                     extracted_phone_from_image = parsed.get("phone","").strip()
                                     text_from_image = parsed.get("message","").strip()
-                                else:
+                                elif resp:
                                     logger.error(f"Gemini erro {resp.status_code}: {resp.text[:200]}")
                             except Exception as _gemini_err:
                                 logger.error(f"Gemini Vision erro: {_gemini_err}")
