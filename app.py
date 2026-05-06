@@ -418,7 +418,7 @@ if page == "📄 Analisar Mensagem":
                                 mime = "image/jpeg" if ext in ["jpg","jpeg"] else "image/png"
 
                                 resp = requests.post(
-                                    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}",
+                                    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}",
                                     headers={"Content-Type": "application/json"},
                                     json={
                                         "contents": [{
