@@ -12,6 +12,15 @@ import json
 import logging
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+# Fuso horário padrão — África Central (CAT = UTC+2)
+# Usado como fallback se não for possível obter o fuso do utilizador
+CAT = ZoneInfo("Africa/Maputo")
+
+def _now() -> str:
+    """Devolve a hora actual no fuso horário de África Central (CAT UTC+2)."""
+    return datetime.now(CAT).strftime("%Y-%m-%d %H:%M:%S")
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +212,7 @@ def sync_from_supabase():
     init_db()
     conn = get_connection()
     cursor = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = _now()
 
     try:
         # Sincronizar logs
@@ -277,7 +286,7 @@ def save_analysis(text: str, result: dict, phone_number: str = None):
         conn = get_connection()
         cursor = conn.cursor()
         meta = result.get("meta", {})
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = _now()
 
         cursor.execute("""
             INSERT INTO logs (
@@ -376,7 +385,7 @@ def _supabase_update_phone(sb, phone_number, result, now):
 
 
 def _update_phone_reputation(cursor, phone_number, risk_type, risk_level):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = _now()
     cursor.execute("SELECT id FROM phone_numbers WHERE phone_number = ?", (phone_number,))
     if cursor.fetchone():
         cursor.execute("""
@@ -400,7 +409,7 @@ def save_feedback(log_id: int, correct: bool, comment: str = ""):
         init_db()
         conn = get_connection()
         cursor = conn.cursor()
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = _now()
         cursor.execute("""
             INSERT INTO feedback (log_id, correct, comment, date)
             VALUES (?,?,?,?)
@@ -453,7 +462,7 @@ def add_to_blacklist(phone_number: str, reason: str = ""):
         init_db()
         conn = get_connection()
         cursor = conn.cursor()
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = _now()
         cursor.execute("""
             INSERT OR IGNORE INTO blacklist (phone_number, reason, date_added)
             VALUES (?,?,?)

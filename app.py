@@ -17,6 +17,11 @@ import plotly.express as px
 import os
 import io
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+_CAT = ZoneInfo("Africa/Maputo")
+def _now_cat():
+    return datetime.now(_CAT)
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -111,7 +116,7 @@ def generate_pdf(result: dict, message: str, phone_number: str = None) -> bytes:
     story.append(Paragraph("Relatório de Análise de Mensagem", title_style))
     story.append(Paragraph("Sistema de Detecção de Links Maliciosos em Mensagens Digitais", small_style))
     story.append(Spacer(1, 6))
-    story.append(Paragraph(f"Data de análise: {datetime.now().strftime('%d/%m/%Y às %H:%M:%S')}", small_style))
+    story.append(Paragraph(f"Data de análise: {_now_cat().strftime('%d/%m/%Y às %H:%M:%S')}", small_style))
     story.append(Spacer(1, 14))
 
     story.append(Paragraph("Mensagem Analisada", heading_style))
@@ -332,7 +337,7 @@ if page == "📄 Analisar Mensagem":
         st.download_button(
             label="⬇️ Descarregar Relatório PDF",
             data=pdf_bytes,
-            file_name=f"relatorio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+            file_name=f"relatorio_{_now_cat().strftime('%Y%m%d_%H%M%S')}.pdf",
             mime="application/pdf",
         )
 
@@ -799,7 +804,7 @@ elif page == "📊 Dashboard Estatístico":
         st.download_button(
             label="⬇️ Exportar dados como CSV",
             data=csv,
-            file_name=f"analises_{datetime.now().strftime('%Y%m%d')}.csv",
+            file_name=f"analises_{_now_cat().strftime('%Y%m%d')}.csv",
             mime="text/csv",
         )
 
