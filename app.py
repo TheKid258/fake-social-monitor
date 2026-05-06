@@ -18,6 +18,8 @@ import os
 import io
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import logging
+logger = logging.getLogger(__name__)
 
 _CAT = ZoneInfo("Africa/Maputo")
 def _now_cat():
@@ -283,7 +285,9 @@ if page == "📄 Analisar Mensagem":
 
                 # Mostrar card do link com detalhe completo
                 if status == "Perigoso":
-                    st.error(f"🔴 **PERIGOSO — confirmado pelo Google Safe Browsing**\n\n`{link}`\n\n⚠️ Tipo de ameaça: `{threat}`")
+                    verified = link_data.get("verified_by", [])
+                    source = " + ".join(verified) if verified else "API de segurança"
+                    st.error(f"🔴 **PERIGOSO — confirmado por {source}**\n\n`{link}`\n\n⚠️ Tipo de ameaça: `{threat}`")
 
                 elif is_wa:
                     st.error(f"🟠 **SUSPEITO — WhatsApp Phishing**\n\n`{link}`\n\nEste link é usado para roubar dados via WhatsApp. Nunca cliques!")
@@ -398,13 +402,59 @@ if page == "📄 Analisar Mensagem":
                     image = Image.open(uploaded)
                     st.image(image, caption="Imagem carregada", width=400)
 
+                    gemini_key = os.getenv("GEMINI_API_KEY", "")
                     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
 
                     # ------------------------------------------------
-                    # MÉTODO 1: Claude Vision API (se disponível)
+                    # MÉTODO 1: Gemini Vision (gratuito, melhor qualidade)
                     # ------------------------------------------------
-                    if anthropic_key:
-                        with st.spinner("🧠 A extrair texto com IA..."):
+                    if gemini_key and not text_from_image:
+                        with st.spinner("🧠 A extrair texto com Gemini IA..."):
+                            try:
+                                uploaded.seek(0)
+                                img_bytes = uploaded.read()
+                                img_b64 = base64.b64encode(img_bytes).decode()
+                                ext = uploaded.name.split(".")[-1].lower()
+                                mime = "image/jpeg" if ext in ["jpg","jpeg"] else "image/png"
+
+                                resp = requests.post(
+                                    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}",
+                                    headers={"Content-Type": "application/json"},
+                                    json={
+                                        "contents": [{
+                                            "parts": [
+                                                {
+                                                    "inline_data": {
+                                                        "mime_type": mime,
+                                                        "data": img_b64
+                                                    }
+                                                },
+                                                {
+                                                    "text": 'Esta é uma imagem do WhatsApp ou SMS. Extrai APENAS: 1) o número de telefone do remetente visível no cabeçalho, 2) o texto exacto da mensagem recebida (só o conteúdo da bolha da conversa, sem hora, data, avisos do sistema ou outros elementos). Responde SOMENTE em JSON válido sem markdown: {"phone": "...", "message": "..."} . Se não encontrares um dos campos, usa string vazia.'
+                                                }
+                                            ]
+                                        }],
+                                        "generationConfig": {"maxOutputTokens": 500, "temperature": 0}
+                                    },
+                                    timeout=20
+                                )
+
+                                if resp.status_code == 200:
+                                    raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                                    raw = raw.replace("```json","").replace("```","").strip()
+                                    parsed = _json.loads(raw)
+                                    extracted_phone_from_image = parsed.get("phone","").strip()
+                                    text_from_image = parsed.get("message","").strip()
+                                else:
+                                    logger.error(f"Gemini erro {resp.status_code}: {resp.text[:200]}")
+                            except Exception as _gemini_err:
+                                logger.error(f"Gemini Vision erro: {_gemini_err}")
+
+                    # ------------------------------------------------
+                    # MÉTODO 2: Claude Vision (se Gemini falhar)
+                    # ------------------------------------------------
+                    if anthropic_key and not text_from_image:
+                        with st.spinner("🧠 A extrair texto com Claude IA..."):
                             try:
                                 uploaded.seek(0)
                                 img_bytes = uploaded.read()
@@ -426,24 +476,20 @@ if page == "📄 Analisar Mensagem":
                                             "role": "user",
                                             "content": [
                                                 {"type": "image", "source": {"type": "base64", "media_type": mime, "data": img_b64}},
-                                                {"type": "text", "text": "Esta é uma captura de ecrã do WhatsApp ou SMS. Extrai APENAS: 1) o número de telefone do remetente visível no cabeçalho, 2) o texto exacto da mensagem recebida (só o conteúdo da bolha, sem hora nem data). Responde SOMENTE em JSON válido sem markdown: {\"phone\": \"...\" , \"message\": \"...\"} . Se não encontrares um dos campos, usa string vazia."}
+                                                {"type": "text", "text": 'Esta é uma captura de ecrã do WhatsApp ou SMS. Extrai APENAS: 1) o número de telefone do remetente visível no cabeçalho, 2) o texto exacto da mensagem recebida (só o conteúdo da bolha, sem hora nem data). Responde SOMENTE em JSON válido sem markdown: {"phone": "...", "message": "..."} . Se não encontrares um dos campos, usa string vazia.'}
                                             ]
                                         }]
                                     },
                                     timeout=15
                                 )
-
                                 if resp.status_code == 200:
                                     raw = resp.json()["content"][0]["text"].strip()
                                     raw = raw.replace("```json","").replace("```","").strip()
                                     parsed = _json.loads(raw)
                                     extracted_phone_from_image = parsed.get("phone","").strip()
                                     text_from_image = parsed.get("message","").strip()
-                                else:
-                                    st.error(f"❌ Erro API {resp.status_code}: {resp.text[:300]}")
                             except Exception as _vision_err:
-                                st.error(f"⚠️ Excepção Claude Vision: {type(_vision_err).__name__}: {_vision_err}")
-                                # fallback para Tesseract
+                                logger.error(f"Claude Vision erro: {_vision_err}")
 
                     # ------------------------------------------------
                     # MÉTODO 2: Tesseract com detecção automática da bolha

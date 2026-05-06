@@ -289,12 +289,11 @@ def is_whatsapp_phishing(url: str) -> bool:
 
 def check_link_safety(url: str) -> dict:
     """
-    Verificação completa de um link:
+    Verificação completa de um link em 4 camadas:
     1. Análise heurística local (sempre executada)
     2. Detecção de WhatsApp phishing
-    3. Google Safe Browsing API (se chave configurada)
-    
-    O resultado final combina as três camadas.
+    3. Google Safe Browsing API
+    4. Google Web Risk API (mais actualizado e preciso)
     """
     # Camada 1: Heurística local
     heuristic = analyze_url_heuristic(url)
@@ -308,14 +307,13 @@ def check_link_safety(url: str) -> dict:
         "heuristic_reasons": heuristic["heuristic_reasons"],
         "heuristic_score": heuristic["heuristic_score"],
         "is_trusted": heuristic.get("is_trusted", False),
+        "verified_by": [],
     }
 
-    # Se for domínio confiável, não precisa de verificações adicionais
     if heuristic.get("is_trusted"):
         result["status"] = "Confiável"
         return result
 
-    # Aplicar score da heurística
     h_score = heuristic["heuristic_score"]
     if h_score >= 8:
         result["status"] = "Suspeito — Alto Risco"
@@ -335,37 +333,57 @@ def check_link_safety(url: str) -> dict:
         result["score_bonus"] = max(result["score_bonus"], 4)
 
     # Camada 3: Google Safe Browsing API
-    if not API_KEY:
-        return result
+    if API_KEY:
+        try:
+            endpoint = f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={API_KEY}"
+            payload = {
+                "client": {"clientId": "phishing_monitor", "clientVersion": "1.2"},
+                "threatInfo": {
+                    "threatTypes": [
+                        "MALWARE", "SOCIAL_ENGINEERING",
+                        "UNWANTED_SOFTWARE", "POTENTIALLY_HARMFUL_APPLICATION",
+                    ],
+                    "platformTypes": ["ANY_PLATFORM"],
+                    "threatEntryTypes": ["URL"],
+                    "threatEntries": [{"url": url}],
+                },
+            }
+            resp = requests.post(endpoint, json=payload, timeout=5)
+            data = resp.json()
+            if "matches" in data:
+                threat = data["matches"][0].get("threatType", "AMEAÇA DETECTADA")
+                result["status"] = "Perigoso"
+                result["threat_type"] = threat
+                result["score_bonus"] = 8
+                result["verified_by"].append("Google Safe Browsing")
+        except Exception as e:
+            result["api_error_sb"] = str(e)
 
-    endpoint = f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={API_KEY}"
-    payload = {
-        "client": {"clientId": "phishing_monitor", "clientVersion": "1.2"},
-        "threatInfo": {
-            "threatTypes": [
-                "MALWARE",
-                "SOCIAL_ENGINEERING",
-                "UNWANTED_SOFTWARE",
-                "POTENTIALLY_HARMFUL_APPLICATION",
-                "THREAT_TYPE_UNSPECIFIED",
-            ],
-            "platformTypes": ["ANY_PLATFORM"],
-            "threatEntryTypes": ["URL"],
-            "threatEntries": [{"url": url}],
-        },
-    }
-    try:
-        resp = requests.post(endpoint, json=payload, timeout=5)
-        data = resp.json()
-        if "matches" in data:
-            match = data["matches"][0]
-            threat = match.get("threatType", "AMEAÇA DETECTADA")
-            # API confirmou — sobrepõe tudo com Perigoso
-            result["status"] = "Perigoso"
-            result["threat_type"] = threat
-            result["score_bonus"] = 8  # Confirmado pela API — penalização máxima
-    except Exception as e:
-        result["api_error"] = str(e)
+    # Camada 4: Google Web Risk API
+    WEB_RISK_KEY = os.getenv("GOOGLE_WEB_RISK_API_KEY", "")
+    if WEB_RISK_KEY and result["status"] != "Perigoso":
+        try:
+            from urllib.parse import quote
+            encoded_url = quote(url, safe="")
+            endpoint = (
+                f"https://webrisk.googleapis.com/v1/uris:search"
+                f"?key={WEB_RISK_KEY}"
+                f"&threatTypes=MALWARE"
+                f"&threatTypes=SOCIAL_ENGINEERING"
+                f"&threatTypes=UNWANTED_SOFTWARE"
+                f"&uri={encoded_url}"
+            )
+            resp = requests.get(endpoint, timeout=5)
+            data = resp.json()
+            if "threat" in data:
+                threat_types_found = data["threat"].get("threatTypes", ["AMEAÇA DETECTADA"])
+                threat = ", ".join(threat_types_found)
+                result["status"] = "Perigoso"
+                result["threat_type"] = f"Web Risk: {threat}"
+                result["score_bonus"] = 8
+                result["verified_by"].append("Google Web Risk")
+        except Exception as e:
+            result["api_error_wr"] = str(e)
 
     return result
 
