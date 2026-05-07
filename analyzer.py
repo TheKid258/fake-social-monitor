@@ -430,16 +430,19 @@ def calculate_risk_level(score: int, meta: dict) -> tuple[str, int]:
     return level, final_score
 
 
-def analyze_message(text: str, phone_number: str = None) -> dict:
+def analyze_message(text: str, phone_number: str = None, image_b64: str = None, image_mime: str = "image/jpeg") -> dict:
     """
     Pipeline completo de análise:
     1. Normaliza texto
     2. Detecta padrões com pesos
     3. Verifica blacklist
-    4. Verifica links (heurística + WhatsApp + Google Safe Browsing)
-    5. Predição ML
+    4. Verifica links (heurística + APIs)
+    5. Predição ML — usa texto E imagem directamente se OCR falhou
     """
-    meta = preprocess(text)
+    meta = preprocess(text) if text.strip() else {
+        "normalized": "", "uppercase_ratio": 0,
+        "exclamations": 0, "emojis": 0, "mixed_scripts": False
+    }
     normalized = meta["normalized"]
 
     pattern_result = detect_patterns(normalized)
@@ -459,7 +462,7 @@ def analyze_message(text: str, phone_number: str = None) -> dict:
             if "Número na blacklist" not in detected_patterns:
                 detected_patterns.append("Número na blacklist")
 
-    # Verificar links — heurística + API
+    # Verificar links — heurística + APIs
     link_results = {}
     for link in extract_links(text):
         link_check = check_link_safety(link)
@@ -476,23 +479,37 @@ def analyze_message(text: str, phone_number: str = None) -> dict:
                 detected_patterns.append("Link de WhatsApp suspeito")
                 risk_type = "Golpe Financeiro / Phishing"
 
-            if link_check["status"] == "Perigoso" and "Link perigoso confirmado (Google Safe Browsing)" not in detected_patterns:
-                detected_patterns.append("Link perigoso confirmado (Google Safe Browsing)")
+            if link_check["status"] == "Perigoso" and "Link perigoso confirmado" not in detected_patterns:
+                detected_patterns.append("Link perigoso confirmado")
                 risk_type = "Golpe Financeiro / Phishing"
 
             if "Alto Risco" in str(link_check.get("status", "")) and "Link suspeito (análise heurística)" not in detected_patterns:
                 detected_patterns.append("Link suspeito (análise heurística)")
 
-    # Predição ML
-    ml_results = predict_all(normalized)
-    if ml_results.get("final_decision") and final_score < 4:
-        ml_decision = ml_results["final_decision"]
-        if ml_decision != "Baixo ou Nenhum Risco":
+    # Predição ML — passa imagem se texto for insuficiente
+    # Se o texto for curto (OCR falhou parcialmente), o Gemini analisa a imagem directamente
+    use_image = image_b64 and len(normalized.split()) < 5
+    ml_results = predict_all(normalized, image_b64=image_b64 if use_image else None, image_mime=image_mime)
+
+    # Usar decisão ML se:
+    # - score baixo (padrões não detectaram nada)
+    # - OU texto insuficiente mas imagem disponível
+    ml_decision = ml_results.get("final_decision")
+    if ml_decision and ml_decision not in ("Baixo ou Nenhum Risco", "Mensagem Normal / Segura"):
+        if final_score < 4 or (use_image and final_score == 0):
             risk_type = ml_decision
             final_score = max(final_score, 4)
-            risk_level = "Médio"
+            risk_level = "Médio" if final_score < 8 else "Alto"
             if "Padrão detectado pelo ML" not in detected_patterns:
                 detected_patterns.append("Padrão detectado pelo ML")
+        elif final_score >= 4 and risk_type == "Baixo ou Nenhum Risco":
+            # ML confirma risco que os padrões já detectaram
+            risk_type = ml_decision
+
+    # Se Gemini detectou texto na imagem e não tínhamos texto, actualiza
+    gemini_result = ml_results.get("gemini", {})
+    if gemini_result.get("texto_detectado") and not text.strip():
+        text = gemini_result["texto_detectado"]
 
     # Alerta educativo
     if risk_type == "Golpe de Emprego / Recrutamento Falso":

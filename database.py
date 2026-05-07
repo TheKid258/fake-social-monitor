@@ -593,11 +593,18 @@ def get_top_suspicious_numbers(limit: int = 10) -> list:
 # ============================================================
 
 def get_training_data() -> tuple[list, list]:
+    """
+    Obtém dados de treino incluindo:
+    - Mensagens com feedback correcto (todas as categorias)
+    - Mensagens de alto/médio risco confirmadas
+    - Mensagens normais/seguras (para o ML aprender a distinguir)
+    """
     try:
         init_db()
         conn = get_connection()
         cursor = conn.cursor()
 
+        # Mensagens com feedback correcto — inclui normais e suspeitas
         cursor.execute("""
             SELECT l.message, l.risk_type
             FROM logs l
@@ -609,18 +616,30 @@ def get_training_data() -> tuple[list, list]:
         """)
         rows_feedback = cursor.fetchall()
 
+        # Mensagens de alto/médio risco
         cursor.execute("""
             SELECT message, risk_type FROM logs
             WHERE risk_level IN ('Alto', 'Médio')
             AND risk_type IS NOT NULL
             AND risk_type != 'Desconhecido'
             AND length(message) > 10
-            LIMIT 500
+            LIMIT 300
         """)
         rows_high = cursor.fetchall()
+
+        # Mensagens normais/seguras — importante para o ML não classificar tudo como suspeito
+        cursor.execute("""
+            SELECT message, 'Mensagem Normal / Segura' as risk_type FROM logs
+            WHERE risk_level = 'Nenhum'
+            AND score = 0
+            AND length(message) > 10
+            LIMIT 200
+        """)
+        rows_normal = cursor.fetchall()
+
         conn.close()
 
-        all_rows = list(set(rows_feedback + rows_high))
+        all_rows = list(set(rows_feedback + rows_high + rows_normal))
         return [r[0] for r in all_rows], [r[1] for r in all_rows]
 
     except Exception as e:

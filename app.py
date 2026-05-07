@@ -696,9 +696,27 @@ if page == "📄 Analisar Mensagem":
             else:
                 final_text = ""
 
-            if final_text.strip():
+            # Passar imagem ao analyzer se OCR falhou (texto insuficiente)
+            _img_b64_for_analysis = None
+            _img_mime_for_analysis = "image/jpeg"
+            if len(final_text.strip().split()) < 5 and "uploaded" in dir() and uploaded:
+                try:
+                    import base64 as _b64
+                    uploaded.seek(0)
+                    _img_b64_for_analysis = _b64.b64encode(uploaded.read()).decode()
+                    _ext = uploaded.name.split(".")[-1].lower()
+                    _img_mime_for_analysis = "image/jpeg" if _ext in ["jpg","jpeg"] else "image/png"
+                except Exception:
+                    pass
+
+            if final_text.strip() or _img_b64_for_analysis:
                 with st.spinner("A analisar..."):
-                    result = analyze_message(final_text, phone_number=phone_number.strip() or None)
+                    result = analyze_message(
+                        final_text,
+                        phone_number=phone_number.strip() or None,
+                        image_b64=_img_b64_for_analysis,
+                        image_mime=_img_mime_for_analysis,
+                    )
 
                 # Guarda resultado no session_state e faz refresh (limpa o campo)
                 st.session_state["analysis_done"] = True
@@ -707,7 +725,7 @@ if page == "📄 Analisar Mensagem":
                 st.session_state["last_phone"] = phone_number
                 st.rerun()
             else:
-                st.warning("Por favor, insira uma mensagem ou carregue uma imagem.")
+                st.warning("Por favor, insira uma mensagem, carregue uma imagem ou cole o texto manualmente.")
 
 
 # ============================================================

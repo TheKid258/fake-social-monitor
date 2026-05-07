@@ -183,6 +183,8 @@ def predict_claude(text: str) -> dict:
 - Fake News / Desinformação
 - Manipulação Social
 - Curanderismo / Golpe Tradicional
+- Golpe de Emprego / Recrutamento Falso
+- Mensagem Normal / Segura
 - Baixo ou Nenhum Risco
 
 Mensagem: "{text}"
@@ -223,18 +225,111 @@ Responde APENAS com um JSON (sem texto adicional):
         return {"available": False, "reason": str(e)}
 
 
-def predict_all(text: str) -> dict:
-    nb  = predict_naive_bayes(text)
-    rf  = predict_random_forest(text)
-    cld = predict_claude(text)
+def predict_gemini(text: str, image_b64: str = None, image_mime: str = "image/jpeg") -> dict:
+    """
+    Classifica usando Gemini — suporta texto puro OU imagem directamente.
+    Se image_b64 for fornecido, analisa a imagem directamente sem depender do OCR.
+    """
+    gemini_key = os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_SAFE_BROWSING_API_KEY", "")
+    if not gemini_key:
+        return {"available": False, "reason": "GEMINI_API_KEY não configurada"}
 
-    predictions = [r["prediction"] for r in [nb, rf, cld] if r.get("available") and r.get("prediction")]
+    categorias = (
+        "Golpe Financeiro / Phishing, Apostas / Aliciamento Digital, "
+        "Fake News / Desinformação, Manipulação Social, "
+        "Curanderismo / Golpe Tradicional, Golpe de Emprego / Recrutamento Falso, "
+        "Mensagem Normal / Segura, Baixo ou Nenhum Risco"
+    )
+
+    if image_b64:
+        # Análise directa da imagem — não depende do OCR
+        prompt = (
+            f"Analisa esta imagem de uma mensagem (WhatsApp, SMS ou outra). "
+            f"Classifica o conteúdo numa destas categorias: {categorias}. "
+            f"Considera padrões visuais, texto visível, links, números e contexto. "
+            f'Responde APENAS em JSON: {{"categoria": "...", "confianca": 0-100, "razao": "...", "texto_detectado": "texto da mensagem se visível"}}'
+        )
+        parts = [
+            {"inline_data": {"mime_type": image_mime, "data": image_b64}},
+            {"text": prompt}
+        ]
+    else:
+        prompt = (
+            f'Analisa esta mensagem e classifica numa destas categorias: {categorias}. '
+            f'Mensagem: "{text}". '
+            f'Responde APENAS em JSON: {{"categoria": "...", "confianca": 0-100, "razao": "..."}}'
+        )
+        parts = [{"text": prompt}]
+
+    endpoints = [
+        f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={gemini_key}",
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}",
+    ]
+
+    for endpoint in endpoints:
+        try:
+            resp = requests.post(
+                endpoint,
+                headers={"Content-Type": "application/json"},
+                json={
+                    "contents": [{"parts": parts}],
+                    "generationConfig": {"maxOutputTokens": 300, "temperature": 0}
+                },
+                timeout=20,
+            )
+            if resp.status_code == 200:
+                raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                raw = raw.replace("```json", "").replace("```", "").strip()
+                result = json.loads(raw)
+                return {
+                    "available": True,
+                    "model": "Gemini Vision" if image_b64 else "Gemini",
+                    "prediction": result.get("categoria", "Desconhecido"),
+                    "confidence": result.get("confianca", 0),
+                    "reason": result.get("razao", ""),
+                    "texto_detectado": result.get("texto_detectado", ""),
+                }
+            elif resp.status_code in (404, 429):
+                continue
+        except Exception:
+            continue
+
+    return {"available": False, "reason": "Gemini não disponível"}
+
+
+def predict_all(text: str, image_b64: str = None, image_mime: str = "image/jpeg") -> dict:
+    """
+    Corre todos os modelos disponíveis.
+    Se image_b64 for fornecido, o Gemini analisa a imagem directamente
+    — útil quando o OCR falhou ou extraiu texto incorrecto.
+    """
+    nb  = predict_naive_bayes(text) if text.strip() else {"available": False, "reason": "Sem texto"}
+    rf  = predict_random_forest(text) if text.strip() else {"available": False, "reason": "Sem texto"}
+    cld = predict_claude(text) if text.strip() else {"available": False, "reason": "Sem texto"}
+
+    # Gemini analisa imagem directamente se disponível, ou texto se não há imagem
+    if image_b64:
+        gem = predict_gemini(text, image_b64=image_b64, image_mime=image_mime)
+        # Se Gemini detectou texto na imagem, usa-o para complementar
+        if gem.get("texto_detectado") and not text.strip():
+            text_from_gemini = gem["texto_detectado"]
+            if text_from_gemini.strip():
+                nb  = predict_naive_bayes(text_from_gemini)
+                rf  = predict_random_forest(text_from_gemini)
+    else:
+        gem = predict_gemini(text) if text.strip() else {"available": False, "reason": "Sem texto"}
+
+    predictions = [
+        r["prediction"] for r in [nb, rf, cld, gem]
+        if r.get("available") and r.get("prediction")
+    ]
     final = Counter(predictions).most_common(1)[0][0] if predictions else None
 
     return {
         "naive_bayes":    nb,
         "random_forest":  rf,
         "claude":         cld,
+        "gemini":         gem,
         "final_decision": final,
         "votes":          len(predictions),
     }
