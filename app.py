@@ -516,42 +516,48 @@ if page == "📄 Analisar Mensagem":
                                 logger.error(f"Claude Vision erro: {_vision_err}")
 
                     # ------------------------------------------------
-                    # MÉTODO 2: Tesseract com detecção automática da bolha
+                    # MÉTODO 2: Tesseract melhorado
                     # ------------------------------------------------
                     if not text_from_image:
                         w_img, h_img = image.size
                         arr_rgb = np.array(image.convert("RGB"))
 
-                        # --- Detectar se é captura de browser ou imagem directa ---
-                        # Captura de browser: fundo branco/claro nas bordas
-                        # Imagem directa do WhatsApp: fundo escuro
+                        # Detectar se é captura de browser ou imagem directa
                         border_brightness = np.mean(arr_rgb[:50, :, :])
                         is_browser_capture = border_brightness > 150
 
                         if is_browser_capture:
+                            # Encontrar o telefone dentro da captura do browser
                             col_means = np.mean(arr_rgb, axis=(0, 2))
-                            row_means_all = np.mean(arr_rgb, axis=(1, 2))
-                            dark_cols = np.where(col_means < 130)[0]
-                            dark_rows = np.where(row_means_all < 130)[0]
-                            st.caption(f"🔍 Debug: browser={is_browser_capture}, brilho_borda={border_brightness:.0f}, dark_cols={len(dark_cols)}, dark_rows={len(dark_rows)}")
-                            if len(dark_cols) > 10 and len(dark_rows) > 10:
-                                x1 = int(dark_cols[0])
-                                x2 = int(dark_cols[-1])
-                                y1 = int(dark_rows[0])
-                                y2 = int(dark_rows[-1])
-                                phone_img = image.crop((x1, y1, x2, y2))
-                                st.caption(f"📱 Telefone recortado: {phone_img.size}")
+                            dark_col_mask = col_means < 130
+                            ch = np.diff(dark_col_mask.astype(int))
+                            sc = list(np.where(ch == 1)[0] + 1)
+                            ec = list(np.where(ch == -1)[0] + 1)
+                            best_x1, best_x2 = 0, w_img
+                            for s, e in zip(sc, ec):
+                                if e - s > best_x2 - best_x1:
+                                    best_x1, best_x2 = s, e
+                            zone = arr_rgb[:, max(0,best_x1):min(w_img,best_x2), :]
+                            row_z = np.mean(zone, axis=(1, 2))
+                            dark_row_mask = row_z < 150
+                            cr = np.diff(dark_row_mask.astype(int))
+                            sr = list(np.where(cr == 1)[0] + 1)
+                            er = list(np.where(cr == -1)[0] + 1)
+                            best_y1, best_y2 = 0, h_img
+                            for s, e in zip(sr, er):
+                                if e - s > best_y2 - best_y1:
+                                    best_y1, best_y2 = s, e
+                            if best_x2 > best_x1 + 50 and best_y2 > best_y1 + 50:
+                                phone_img = image.crop((best_x1, best_y1, best_x2, best_y2))
                             else:
                                 phone_img = image
-                                st.caption("⚠️ Telefone não detectado, usando imagem completa")
                         else:
                             phone_img = image
-                            st.caption(f"🔍 Debug: imagem directa, brilho_borda={border_brightness:.0f}")
 
                         pw, ph = phone_img.size
                         arr_phone = np.array(phone_img.convert("RGB"))
 
-                        # --- Extrair número do cabeçalho do telefone (top 20%) ---
+                        # Extrair número do cabeçalho (top 20%, invertido para leitura)
                         header = phone_img.crop((0, 0, pw, int(ph * 0.20)))
                         header_arr = 255 - np.array(header.convert("RGB"))
                         header_img = Image.fromarray(header_arr.astype(np.uint8)).convert("L")
@@ -564,47 +570,42 @@ if page == "📄 Analisar Mensagem":
                             if pm:
                                 extracted_phone_from_image = pm.group(1).strip()
 
-                        # --- Detectar bolha automaticamente por brilho ---
-                        # Bolha WhatsApp dark mode: brilho médio 45-100
+                        # Detectar bolha: brilho entre 35-130 (cinzento WhatsApp dark mode)
                         row_means = np.mean(arr_phone, axis=(1, 2))
-                        in_bubble = row_means >= 45
+                        in_bubble = (row_means >= 35) & (row_means <= 130)
                         changes = np.diff(in_bubble.astype(int))
-                        starts = np.where(changes == 1)[0] + 1
-                        ends = np.where(changes == -1)[0] + 1
-                        if len(starts) == 0 and in_bubble[0]:
-                            starts = np.array([0])
-                        if len(ends) == 0 and in_bubble[-1]:
-                            ends = np.array([ph])
+                        starts = list(np.where(changes == 1)[0] + 1)
+                        ends = list(np.where(changes == -1)[0] + 1)
+                        if len(starts) == 0 and in_bubble[0]: starts = [0]
+                        if len(ends) == 0 and in_bubble[-1]: ends = [ph]
 
                         best_start, best_end = 0, 0
                         for s, e in zip(starts, ends):
                             if e - s > best_end - best_start:
                                 best_start, best_end = s, e
 
-                        st.caption(f"🫧 Bolha detectada: y={best_start}-{best_end} de {ph}px total")
-
                         if best_end > best_start + 30:
-                            margin = 25
-                            bubble_crop = phone_img.crop((0, max(0, best_start - margin),
-                                                          pw, min(ph, best_end + margin)))
+                            margin = 40
+                            # Recortar só zona esquerda (60% da largura) onde está o texto
+                            bubble_crop = phone_img.crop((
+                                0, max(0, best_start - margin),
+                                int(pw * 0.62), min(ph, best_end + margin)
+                            ))
                         else:
-                            # Fallback: zona central
-                            bubble_crop = phone_img.crop((int(pw*0.03), int(ph*0.20),
-                                                          int(pw*0.97), int(ph*0.90)))
+                            bubble_crop = phone_img.crop((
+                                0, int(ph*0.25),
+                                int(pw*0.62), int(ph*0.88)
+                            ))
 
                         arr_b = np.array(bubble_crop.convert("RGB"))
                         bubble_brightness = arr_b.mean()
 
-                        # Detectar light mode (bolha branca) vs dark mode (bolha cinzenta)
-                        if bubble_brightness > 120:
-                            # Light mode: texto escuro em fundo claro — não inverter
-                            msg_gray = bubble_crop.convert("L")
+                        # NÃO inverter — o Tesseract lê melhor bolhas WhatsApp sem inversão
+                        msg_gray = bubble_crop.convert("L")
+                        if bubble_brightness > 150:
                             msg_gray = ImageEnhance.Contrast(msg_gray).enhance(2.0)
                         else:
-                            # Dark mode: texto claro em fundo escuro — inverter
-                            arr_inv = 255 - arr_b
-                            msg_gray = Image.fromarray(arr_inv.astype(np.uint8)).convert("L")
-                            msg_gray = ImageEnhance.Contrast(msg_gray).enhance(3.5)
+                            msg_gray = ImageEnhance.Contrast(msg_gray).enhance(2.5)
 
                         msg_gray = ImageEnhance.Sharpness(msg_gray).enhance(2.0)
                         mw, mh = msg_gray.size
