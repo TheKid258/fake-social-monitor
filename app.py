@@ -96,16 +96,21 @@ if st.session_state.get("page_override") == "🤖 Modelos ML" and st.session_sta
 else:
     st.session_state["page_override"] = None
 
-    # Tabs de navegação estilo browser (linha de destaque no activo)
-    _tab_analise, _tab_pesquisa, _tab_dashboard = st.tabs([
-        "📄 Analisar Mensagem",
+    # Um único st.tabs com navegação + sub-tabs da análise todos na mesma linha
+    (
+        _tab_texto,
+        _tab_imagem,
+        _tab_spacer,
+        _tab_pesquisa,
+        _tab_dashboard,
+    ) = st.tabs([
+        "✍️ Texto",
+        "🖼️ Imagem (OCR)",
+        "  |  ",
         "🔎 Pesquisar Número",
-        "📊 Dashboard"
+        "📊 Dashboard",
     ])
     page = "_tabs_mode"
-    st.session_state["_tab_analise"] = _tab_analise
-    st.session_state["_tab_pesquisa"] = _tab_pesquisa
-    st.session_state["_tab_dashboard"] = _tab_dashboard
 
 
 # ============================================================
@@ -214,531 +219,522 @@ def generate_pdf(result: dict, message: str, phone_number: str = None) -> bytes:
 # ============================================================
 # PÁGINA 1: Analisar Mensagem
 # ============================================================
-with _tab_analise:
-    st.title("🔍 Analisar Mensagem")
+# Se acabou de ser feita uma análise, mostra os resultados e um botão para nova análise
+if st.session_state["analysis_done"] and st.session_state["last_result"] is not None:
+    result = st.session_state["last_result"]
+    final_text = st.session_state["last_text"]
+    phone_number = st.session_state["last_phone"]
 
-    st.markdown("""
-    Analisa mensagens para identificar golpes digitais, links suspeitos,
-    promoções de apostas e fake news.
-    """)
+    # Botão para limpar e fazer nova análise
+    if st.button("🔄 Nova Análise", type="primary"):
+        st.session_state["analysis_done"] = False
+        st.session_state["last_result"] = None
+        st.session_state["last_text"] = ""
+        st.session_state["last_phone"] = ""
+        st.session_state["detected_phone"] = ""
+        st.session_state["phone_input"] = ""
+        st.session_state["ocr_text"] = ""
+        st.rerun()
 
-    # Se acabou de ser feita uma análise, mostra os resultados e um botão para nova análise
-    if st.session_state["analysis_done"] and st.session_state["last_result"] is not None:
-        result = st.session_state["last_result"]
-        final_text = st.session_state["last_text"]
-        phone_number = st.session_state["last_phone"]
+    st.divider()
 
-        # Botão para limpar e fazer nova análise
-        if st.button("🔄 Nova Análise", type="primary"):
-            st.session_state["analysis_done"] = False
-            st.session_state["last_result"] = None
-            st.session_state["last_text"] = ""
-            st.session_state["last_phone"] = ""
-            st.session_state["detected_phone"] = ""
-            st.session_state["phone_input"] = ""
-            st.session_state["ocr_text"] = ""
-            st.rerun()
+    # --- Mostra resultados ---
+    if result.get("blacklisted"):
+        st.error(f"🚫 ATENÇÃO: O número **{phone_number}** está na blacklist de números confirmadamente perigosos!")
 
-        st.divider()
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Nível de Risco", result["risk_level"])
+    col2.metric("Pontuação", result["score"])
+    col3.metric("Tipo de Conteúdo", result["risk_type"])
 
-        # --- Mostra resultados ---
-        if result.get("blacklisted"):
-            st.error(f"🚫 ATENÇÃO: O número **{phone_number}** está na blacklist de números confirmadamente perigosos!")
-
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Nível de Risco", result["risk_level"])
-        col2.metric("Pontuação", result["score"])
-        col3.metric("Tipo de Conteúdo", result["risk_type"])
-
-        if phone_number.strip():
-            phone_data = lookup_phone(phone_number.strip())
-            if phone_data and phone_data["reputation"]["report_count"] > 1:
-                count = phone_data["reputation"]["report_count"]
-                st.warning(f"📵 O número **{phone_number}** já foi reportado **{count}x** como: *{phone_data['reputation']['risk_type']}*")
-            else:
-                st.info(f"📱 Número {phone_number} registado pela primeira vez.")
-
-        st.subheader("🚩 Padrões Identificados")
-        if result["reasons"]:
-            for r in result["reasons"]:
-                st.write("•", r)
+    if phone_number.strip():
+        phone_data = lookup_phone(phone_number.strip())
+        if phone_data and phone_data["reputation"]["report_count"] > 1:
+            count = phone_data["reputation"]["report_count"]
+            st.warning(f"📵 O número **{phone_number}** já foi reportado **{count}x** como: *{phone_data['reputation']['risk_type']}*")
         else:
-            st.write("Nenhum padrão suspeito detectado.")
+            st.info(f"📱 Número {phone_number} registado pela primeira vez.")
 
-        with st.expander("🔬 Análise detalhada do texto"):
-            meta = result.get("meta", {})
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Maiúsculas", f"{int(meta.get('uppercase_ratio', 0) * 100)}%")
-            m2.metric("Exclamações", meta.get("exclamations", 0))
-            m3.metric("Emojis", meta.get("emojis", 0))
-            m4.metric("Scripts mistos", "Sim ⚠️" if meta.get("mixed_scripts") else "Não")
+    st.subheader("🚩 Padrões Identificados")
+    if result["reasons"]:
+        for r in result["reasons"]:
+            st.write("•", r)
+    else:
+        st.write("Nenhum padrão suspeito detectado.")
 
-        if result["link_results"]:
-            st.subheader("🔗 Links Detectados")
-            for link, link_data in result["link_results"].items():
-                if not isinstance(link_data, dict):
-                    st.warning(f"🟡 {link} → {link_data}")
-                    continue
+    with st.expander("🔬 Análise detalhada do texto"):
+        meta = result.get("meta", {})
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Maiúsculas", f"{int(meta.get('uppercase_ratio', 0) * 100)}%")
+        m2.metric("Exclamações", meta.get("exclamations", 0))
+        m3.metric("Emojis", meta.get("emojis", 0))
+        m4.metric("Scripts mistos", "Sim ⚠️" if meta.get("mixed_scripts") else "Não")
 
-                status = link_data.get("status", "Desconhecido")
-                threat = link_data.get("threat_type", "")
-                is_wa = link_data.get("whatsapp_phishing", False)
-                is_trusted = link_data.get("is_trusted", False)
-                h_level = link_data.get("heuristic_level", "")
-                h_reasons = link_data.get("heuristic_reasons", [])
-                h_score = link_data.get("heuristic_score", 0)
+    if result["link_results"]:
+        st.subheader("🔗 Links Detectados")
+        for link, link_data in result["link_results"].items():
+            if not isinstance(link_data, dict):
+                st.warning(f"🟡 {link} → {link_data}")
+                continue
 
-                # Mostrar card do link com detalhe completo
-                if status == "Perigoso":
-                    verified = link_data.get("verified_by", [])
-                    source = " + ".join(verified) if verified else "API de segurança"
-                    st.error(f"🔴 **PERIGOSO — confirmado por {source}**\n\n`{link}`\n\n⚠️ Tipo de ameaça: `{threat}`")
+            status = link_data.get("status", "Desconhecido")
+            threat = link_data.get("threat_type", "")
+            is_wa = link_data.get("whatsapp_phishing", False)
+            is_trusted = link_data.get("is_trusted", False)
+            h_level = link_data.get("heuristic_level", "")
+            h_reasons = link_data.get("heuristic_reasons", [])
+            h_score = link_data.get("heuristic_score", 0)
 
-                elif is_wa:
-                    st.error(f"🟠 **SUSPEITO — WhatsApp Phishing**\n\n`{link}`\n\nEste link é usado para roubar dados via WhatsApp. Nunca cliques!")
+            # Mostrar card do link com detalhe completo
+            if status == "Perigoso":
+                verified = link_data.get("verified_by", [])
+                source = " + ".join(verified) if verified else "API de segurança"
+                st.error(f"🔴 **PERIGOSO — confirmado por {source}**\n\n`{link}`\n\n⚠️ Tipo de ameaça: `{threat}`")
 
-                elif is_trusted:
-                    st.success(f"🟢 **Domínio confiável** — `{link}`")
+            elif is_wa:
+                st.error(f"🟠 **SUSPEITO — WhatsApp Phishing**\n\n`{link}`\n\nEste link é usado para roubar dados via WhatsApp. Nunca cliques!")
 
-                elif "Alto Risco" in status:
-                    with st.expander(f"🔴 **Alto Risco** — `{link[:60]}{'...' if len(link)>60 else ''}`", expanded=True):
-                        st.error(f"**Nível heurístico:** {h_level} (pontuação: {h_score})")
-                        st.markdown("**Motivos detectados pela análise heurística:**")
+            elif is_trusted:
+                st.success(f"🟢 **Domínio confiável** — `{link}`")
+
+            elif "Alto Risco" in status:
+                with st.expander(f"🔴 **Alto Risco** — `{link[:60]}{'...' if len(link)>60 else ''}`", expanded=True):
+                    st.error(f"**Nível heurístico:** {h_level} (pontuação: {h_score})")
+                    st.markdown("**Motivos detectados pela análise heurística:**")
+                    for reason in h_reasons:
+                        st.write(f"  ⚠️ {reason}")
+                    st.caption("ℹ️ Este link não foi confirmado pela API do Google, mas apresenta múltiplos sinais de risco. Não cliques.")
+
+            elif "Médio Risco" in status:
+                with st.expander(f"🟠 **Médio Risco** — `{link[:60]}{'...' if len(link)>60 else ''}`"):
+                    st.warning(f"**Nível heurístico:** {h_level} (pontuação: {h_score})")
+                    if h_reasons:
+                        st.markdown("**Sinais detectados:**")
                         for reason in h_reasons:
                             st.write(f"  ⚠️ {reason}")
-                        st.caption("ℹ️ Este link não foi confirmado pela API do Google, mas apresenta múltiplos sinais de risco. Não cliques.")
+                    st.caption("ℹ️ Procede com cautela. Verifica a fonte antes de clicar.")
 
-                elif "Médio Risco" in status:
-                    with st.expander(f"🟠 **Médio Risco** — `{link[:60]}{'...' if len(link)>60 else ''}`"):
-                        st.warning(f"**Nível heurístico:** {h_level} (pontuação: {h_score})")
-                        if h_reasons:
-                            st.markdown("**Sinais detectados:**")
-                            for reason in h_reasons:
-                                st.write(f"  ⚠️ {reason}")
-                        st.caption("ℹ️ Procede com cautela. Verifica a fonte antes de clicar.")
-
-                elif "Baixo Risco" in status:
-                    with st.expander(f"🟡 **Baixo Risco** — `{link[:60]}{'...' if len(link)>60 else ''}`"):
-                        st.info(f"**Nível heurístico:** {h_level} (pontuação: {h_score})")
-                        if h_reasons:
-                            for reason in h_reasons:
-                                st.write(f"  ℹ️ {reason}")
-
-                else:
-                    st.success(f"🟢 **Aparentemente seguro** — `{link[:60]}{'...' if len(link)>60 else ''}`")
+            elif "Baixo Risco" in status:
+                with st.expander(f"🟡 **Baixo Risco** — `{link[:60]}{'...' if len(link)>60 else ''}`"):
+                    st.info(f"**Nível heurístico:** {h_level} (pontuação: {h_score})")
                     if h_reasons:
-                        with st.expander("Ver detalhes"):
-                            for reason in h_reasons:
-                                st.write(f"  ℹ️ {reason}")
+                        for reason in h_reasons:
+                            st.write(f"  ℹ️ {reason}")
 
-        st.subheader("📢 Avaliação Final")
-        if result["risk_level"] == "Alto":
-            st.error("🚨 ALTO risco. Não clique em links nem partilhe dados pessoais.")
-        elif result["risk_level"] == "Médio":
-            st.warning("⚠️ Requer atenção. Verifique a fonte antes de agir.")
-        elif result["risk_level"] == "Baixo":
-            st.info("ℹ️ Risco baixo. Mantenha-se cauteloso.")
-        else:
-            st.success("✅ Nenhum padrão crítico identificado.")
-
-        with st.expander("📚 Dica de Segurança"):
-            st.info(result["educational_alert"])
-
-        st.subheader("📄 Exportar Relatório")
-        pdf_bytes = generate_pdf(result, final_text, phone_number.strip() or None)
-        st.download_button(
-            label="⬇️ Descarregar Relatório PDF",
-            data=pdf_bytes,
-            file_name=f"relatorio_{_now_cat().strftime('%Y%m%d_%H%M%S')}.pdf",
-            mime="application/pdf",
-        )
-
-        st.subheader("💬 Esta análise foi correcta?")
-        col_f1, col_f2 = st.columns(2)
-        log_id = result.get("log_id")
-
-        with col_f1:
-            if st.button("✅ Sim, está correcta"):
-                save_feedback(log_id, correct=True)
-                st.success("Obrigado pelo feedback!")
-
-        with col_f2:
-            if st.button("❌ Não, está errada"):
-                comment = st.text_input("O que estava errado? (opcional)")
-                save_feedback(log_id, correct=False, comment=comment)
-                st.warning("Feedback registado. Vamos melhorar!")
-
-        if phone_number.strip():
-            st.subheader("🚫 Blacklist")
-            if is_blacklisted(phone_number.strip()):
-                st.error(f"🚫 O número **{phone_number}** está na blacklist de números perigosos.")
-                st.caption("Para remover da blacklist, contacte o administrador do sistema.")
             else:
-                if st.button("🚫 Adicionar número à blacklist"):
-                    reason = st.text_input("Motivo (opcional)", key="bl_reason")
-                    add_to_blacklist(phone_number.strip(), reason)
-                    st.success(f"Número {phone_number} adicionado à blacklist!")
+                st.success(f"🟢 **Aparentemente seguro** — `{link[:60]}{'...' if len(link)>60 else ''}`")
+                if h_reasons:
+                    with st.expander("Ver detalhes"):
+                        for reason in h_reasons:
+                            st.write(f"  ℹ️ {reason}")
 
+    st.subheader("📢 Avaliação Final")
+    if result["risk_level"] == "Alto":
+        st.error("🚨 ALTO risco. Não clique em links nem partilhe dados pessoais.")
+    elif result["risk_level"] == "Médio":
+        st.warning("⚠️ Requer atenção. Verifique a fonte antes de agir.")
+    elif result["risk_level"] == "Baixo":
+        st.info("ℹ️ Risco baixo. Mantenha-se cauteloso.")
     else:
-        # --- Formulário de análise (campo limpo) ---
-        tab1, tab2 = st.tabs(["✍️ Texto", "🖼️ Imagem (OCR)"])
+        st.success("✅ Nenhum padrão crítico identificado.")
 
-        with tab1:
-            text = st.text_area(
-                "Cole aqui a mensagem suspeita...",
-                placeholder="Ex: URGENTE! Clique agora no link bit.ly/xxxxx e confirme os seus dados!",
-                height=180,
-                key="msg_input",
-            )
+    with st.expander("📚 Dica de Segurança"):
+        st.info(result["educational_alert"])
 
-        with tab2:
-            uploaded = st.file_uploader("Carrega uma imagem com a mensagem suspeita", type=["png", "jpg", "jpeg"])
-            text_from_image = ""
-            extracted_phone_from_image = ""
-            if uploaded:
-                try:
-                    from PIL import Image, ImageEnhance
-                    import numpy as np
-                    import pytesseract
-                    import re as _re
-                    import base64
-                    import json as _json
+    st.subheader("📄 Exportar Relatório")
+    pdf_bytes = generate_pdf(result, final_text, phone_number.strip() or None)
+    st.download_button(
+        label="⬇️ Descarregar Relatório PDF",
+        data=pdf_bytes,
+        file_name=f"relatorio_{_now_cat().strftime('%Y%m%d_%H%M%S')}.pdf",
+        mime="application/pdf",
+    )
 
-                    image = Image.open(uploaded)
-                    st.image(image, caption="Imagem carregada", width=400)
+    st.subheader("💬 Esta análise foi correcta?")
+    col_f1, col_f2 = st.columns(2)
+    log_id = result.get("log_id")
 
-                    gemini_key = os.getenv("GEMINI_API_KEY", "")
-                    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+    with col_f1:
+        if st.button("✅ Sim, está correcta"):
+            save_feedback(log_id, correct=True)
+            st.success("Obrigado pelo feedback!")
 
-                    # ------------------------------------------------
-                    # MÉTODO 1: Gemini Vision via Google Cloud
-                    # Usa a mesma chave do Safe Browsing ou chave Gemini dedicada
-                    # ------------------------------------------------
-                    # Tenta chave dedicada Gemini, fallback para chave Google Cloud
-                    _gemini_api_key = gemini_key or os.getenv("GOOGLE_SAFE_BROWSING_API_KEY", "")
-                    if _gemini_api_key and not text_from_image:
-                        with st.spinner("🧠 A extrair texto com Gemini IA..."):
-                            try:
-                                uploaded.seek(0)
-                                img_bytes = uploaded.read()
-                                img_b64 = base64.b64encode(img_bytes).decode()
-                                ext = uploaded.name.split(".")[-1].lower()
-                                mime = "image/jpeg" if ext in ["jpg","jpeg"] else "image/png"
+    with col_f2:
+        if st.button("❌ Não, está errada"):
+            comment = st.text_input("O que estava errado? (opcional)")
+            save_feedback(log_id, correct=False, comment=comment)
+            st.warning("Feedback registado. Vamos melhorar!")
 
-                                _prompt = (
-                                    'Esta é uma imagem do WhatsApp ou SMS. '
-                                    'Extrai APENAS: 1) o número de telefone do remetente visível no cabeçalho, '
-                                    '2) o texto exacto da mensagem recebida (só o conteúdo da bolha da conversa, '
-                                    'sem hora, data, avisos do sistema ou outros elementos). '
-                                    'Responde SOMENTE em JSON válido sem markdown: '
-                                    '{"phone": "...", "message": "..."} . '
-                                    'Se não encontrares um dos campos, usa string vazia.'
-                                )
+    if phone_number.strip():
+        st.subheader("🚫 Blacklist")
+        if is_blacklisted(phone_number.strip()):
+            st.error(f"🚫 O número **{phone_number}** está na blacklist de números perigosos.")
+            st.caption("Para remover da blacklist, contacte o administrador do sistema.")
+        else:
+            if st.button("🚫 Adicionar número à blacklist"):
+                reason = st.text_input("Motivo (opcional)", key="bl_reason")
+                add_to_blacklist(phone_number.strip(), reason)
+                st.success(f"Número {phone_number} adicionado à blacklist!")
 
-                                # Tentar primeiro com v1 (mais estável)
-                                _endpoints = [
-                                    f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={_gemini_api_key}",
-                                    f"https://generativelanguage.googleapis.com/v1/models/gemini-pro-vision:generateContent?key={_gemini_api_key}",
-                                    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={_gemini_api_key}",
-                                ]
+else:
+    # --- Formulário de análise (campo limpo) ---
+    pass
 
-                                resp = None
-                                for _ep in _endpoints:
-                                    try:
-                                        resp = requests.post(
-                                            _ep,
-                                            headers={"Content-Type": "application/json"},
-                                            json={
-                                                "contents": [{
-                                                    "parts": [
-                                                        {"inline_data": {"mime_type": mime, "data": img_b64}},
-                                                        {"text": _prompt}
-                                                    ]
-                                                }],
-                                                "generationConfig": {"maxOutputTokens": 500, "temperature": 0}
-                                            },
-                                            timeout=20
-                                        )
-                                        if resp.status_code == 200:
-                                            break
-                                        elif resp.status_code in (429, 404):
-                                            resp = None
-                                            continue
-                                    except Exception:
+with _tab_texto:
+    text = st.text_area(
+        "Cole aqui a mensagem suspeita...",
+        placeholder="Ex: URGENTE! Clique agora no link bit.ly/xxxxx e confirme os seus dados!",
+        height=180,
+        key="msg_input",
+    )
+
+with _tab_imagem:
+        uploaded = st.file_uploader("Carrega uma imagem com a mensagem suspeita", type=["png", "jpg", "jpeg"])
+        text_from_image = ""
+        extracted_phone_from_image = ""
+        if uploaded:
+            try:
+                from PIL import Image, ImageEnhance
+                import numpy as np
+                import pytesseract
+                import re as _re
+                import base64
+                import json as _json
+
+                image = Image.open(uploaded)
+                st.image(image, caption="Imagem carregada", width=400)
+
+                gemini_key = os.getenv("GEMINI_API_KEY", "")
+                anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+
+                # ------------------------------------------------
+                # MÉTODO 1: Gemini Vision via Google Cloud
+                # Usa a mesma chave do Safe Browsing ou chave Gemini dedicada
+                # ------------------------------------------------
+                # Tenta chave dedicada Gemini, fallback para chave Google Cloud
+                _gemini_api_key = gemini_key or os.getenv("GOOGLE_SAFE_BROWSING_API_KEY", "")
+                if _gemini_api_key and not text_from_image:
+                    with st.spinner("🧠 A extrair texto com Gemini IA..."):
+                        try:
+                            uploaded.seek(0)
+                            img_bytes = uploaded.read()
+                            img_b64 = base64.b64encode(img_bytes).decode()
+                            ext = uploaded.name.split(".")[-1].lower()
+                            mime = "image/jpeg" if ext in ["jpg","jpeg"] else "image/png"
+
+                            _prompt = (
+                                'Esta é uma imagem do WhatsApp ou SMS. '
+                                'Extrai APENAS: 1) o número de telefone do remetente visível no cabeçalho, '
+                                '2) o texto exacto da mensagem recebida (só o conteúdo da bolha da conversa, '
+                                'sem hora, data, avisos do sistema ou outros elementos). '
+                                'Responde SOMENTE em JSON válido sem markdown: '
+                                '{"phone": "...", "message": "..."} . '
+                                'Se não encontrares um dos campos, usa string vazia.'
+                            )
+
+                            # Tentar primeiro com v1 (mais estável)
+                            _endpoints = [
+                                f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={_gemini_api_key}",
+                                f"https://generativelanguage.googleapis.com/v1/models/gemini-pro-vision:generateContent?key={_gemini_api_key}",
+                                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={_gemini_api_key}",
+                            ]
+
+                            resp = None
+                            for _ep in _endpoints:
+                                try:
+                                    resp = requests.post(
+                                        _ep,
+                                        headers={"Content-Type": "application/json"},
+                                        json={
+                                            "contents": [{
+                                                "parts": [
+                                                    {"inline_data": {"mime_type": mime, "data": img_b64}},
+                                                    {"text": _prompt}
+                                                ]
+                                            }],
+                                            "generationConfig": {"maxOutputTokens": 500, "temperature": 0}
+                                        },
+                                        timeout=20
+                                    )
+                                    if resp.status_code == 200:
+                                        break
+                                    elif resp.status_code in (429, 404):
                                         resp = None
                                         continue
+                                except Exception:
+                                    resp = None
+                                    continue
 
-                                if resp and resp.status_code == 200:
-                                    raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-                                    raw = raw.replace("```json","").replace("```","").strip()
-                                    parsed = _json.loads(raw)
-                                    extracted_phone_from_image = parsed.get("phone","").strip()
-                                    text_from_image = parsed.get("message","").strip()
-                                elif resp:
-                                    logger.error(f"Gemini erro {resp.status_code}: {resp.text[:200]}")
-                            except Exception as _gemini_err:
-                                logger.error(f"Gemini Vision erro: {_gemini_err}")
+                            if resp and resp.status_code == 200:
+                                raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                                raw = raw.replace("```json","").replace("```","").strip()
+                                parsed = _json.loads(raw)
+                                extracted_phone_from_image = parsed.get("phone","").strip()
+                                text_from_image = parsed.get("message","").strip()
+                            elif resp:
+                                logger.error(f"Gemini erro {resp.status_code}: {resp.text[:200]}")
+                        except Exception as _gemini_err:
+                            logger.error(f"Gemini Vision erro: {_gemini_err}")
 
-                    # ------------------------------------------------
-                    # MÉTODO 2: Claude Vision (se Gemini falhar)
-                    # ------------------------------------------------
-                    if anthropic_key and not text_from_image:
-                        with st.spinner("🧠 A extrair texto com Claude IA..."):
-                            try:
-                                uploaded.seek(0)
-                                img_bytes = uploaded.read()
-                                img_b64 = base64.b64encode(img_bytes).decode()
-                                ext = uploaded.name.split(".")[-1].lower()
-                                mime = "image/jpeg" if ext in ["jpg","jpeg"] else "image/png"
+                # ------------------------------------------------
+                # MÉTODO 2: Claude Vision (se Gemini falhar)
+                # ------------------------------------------------
+                if anthropic_key and not text_from_image:
+                    with st.spinner("🧠 A extrair texto com Claude IA..."):
+                        try:
+                            uploaded.seek(0)
+                            img_bytes = uploaded.read()
+                            img_b64 = base64.b64encode(img_bytes).decode()
+                            ext = uploaded.name.split(".")[-1].lower()
+                            mime = "image/jpeg" if ext in ["jpg","jpeg"] else "image/png"
 
-                                resp = requests.post(
-                                    "https://api.anthropic.com/v1/messages",
-                                    headers={
-                                        "x-api-key": anthropic_key,
-                                        "anthropic-version": "2023-06-01",
-                                        "content-type": "application/json"
-                                    },
-                                    json={
-                                        "model": "claude-sonnet-4-20250514",
-                                        "max_tokens": 500,
-                                        "messages": [{
-                                            "role": "user",
-                                            "content": [
-                                                {"type": "image", "source": {"type": "base64", "media_type": mime, "data": img_b64}},
-                                                {"type": "text", "text": 'Esta é uma captura de ecrã do WhatsApp ou SMS. Extrai APENAS: 1) o número de telefone do remetente visível no cabeçalho, 2) o texto exacto da mensagem recebida (só o conteúdo da bolha, sem hora nem data). Responde SOMENTE em JSON válido sem markdown: {"phone": "...", "message": "..."} . Se não encontrares um dos campos, usa string vazia.'}
-                                            ]
-                                        }]
-                                    },
-                                    timeout=15
-                                )
-                                if resp.status_code == 200:
-                                    raw = resp.json()["content"][0]["text"].strip()
-                                    raw = raw.replace("```json","").replace("```","").strip()
-                                    parsed = _json.loads(raw)
-                                    extracted_phone_from_image = parsed.get("phone","").strip()
-                                    text_from_image = parsed.get("message","").strip()
-                            except Exception as _vision_err:
-                                logger.error(f"Claude Vision erro: {_vision_err}")
+                            resp = requests.post(
+                                "https://api.anthropic.com/v1/messages",
+                                headers={
+                                    "x-api-key": anthropic_key,
+                                    "anthropic-version": "2023-06-01",
+                                    "content-type": "application/json"
+                                },
+                                json={
+                                    "model": "claude-sonnet-4-20250514",
+                                    "max_tokens": 500,
+                                    "messages": [{
+                                        "role": "user",
+                                        "content": [
+                                            {"type": "image", "source": {"type": "base64", "media_type": mime, "data": img_b64}},
+                                            {"type": "text", "text": 'Esta é uma captura de ecrã do WhatsApp ou SMS. Extrai APENAS: 1) o número de telefone do remetente visível no cabeçalho, 2) o texto exacto da mensagem recebida (só o conteúdo da bolha, sem hora nem data). Responde SOMENTE em JSON válido sem markdown: {"phone": "...", "message": "..."} . Se não encontrares um dos campos, usa string vazia.'}
+                                        ]
+                                    }]
+                                },
+                                timeout=15
+                            )
+                            if resp.status_code == 200:
+                                raw = resp.json()["content"][0]["text"].strip()
+                                raw = raw.replace("```json","").replace("```","").strip()
+                                parsed = _json.loads(raw)
+                                extracted_phone_from_image = parsed.get("phone","").strip()
+                                text_from_image = parsed.get("message","").strip()
+                        except Exception as _vision_err:
+                            logger.error(f"Claude Vision erro: {_vision_err}")
 
-                    # ------------------------------------------------
-                    # MÉTODO 2: Tesseract melhorado
-                    # ------------------------------------------------
-                    if not text_from_image:
-                        w_img, h_img = image.size
-                        arr_rgb = np.array(image.convert("RGB"))
+                # ------------------------------------------------
+                # MÉTODO 2: Tesseract melhorado
+                # ------------------------------------------------
+                if not text_from_image:
+                    w_img, h_img = image.size
+                    arr_rgb = np.array(image.convert("RGB"))
 
-                        # Detectar se é captura de browser ou imagem directa
-                        border_brightness = np.mean(arr_rgb[:50, :, :])
-                        is_browser_capture = border_brightness > 150
+                    # Detectar se é captura de browser ou imagem directa
+                    border_brightness = np.mean(arr_rgb[:50, :, :])
+                    is_browser_capture = border_brightness > 150
 
-                        if is_browser_capture:
-                            # Encontrar o telefone dentro da captura do browser
-                            col_means = np.mean(arr_rgb, axis=(0, 2))
-                            dark_col_mask = col_means < 130
-                            ch = np.diff(dark_col_mask.astype(int))
-                            sc = list(np.where(ch == 1)[0] + 1)
-                            ec = list(np.where(ch == -1)[0] + 1)
-                            best_x1, best_x2 = 0, w_img
-                            for s, e in zip(sc, ec):
-                                if e - s > best_x2 - best_x1:
-                                    best_x1, best_x2 = s, e
-                            zone = arr_rgb[:, max(0,best_x1):min(w_img,best_x2), :]
-                            row_z = np.mean(zone, axis=(1, 2))
-                            dark_row_mask = row_z < 150
-                            cr = np.diff(dark_row_mask.astype(int))
-                            sr = list(np.where(cr == 1)[0] + 1)
-                            er = list(np.where(cr == -1)[0] + 1)
-                            best_y1, best_y2 = 0, h_img
-                            for s, e in zip(sr, er):
-                                if e - s > best_y2 - best_y1:
-                                    best_y1, best_y2 = s, e
-                            if best_x2 > best_x1 + 50 and best_y2 > best_y1 + 50:
-                                phone_img = image.crop((best_x1, best_y1, best_x2, best_y2))
-                            else:
-                                phone_img = image
+                    if is_browser_capture:
+                        # Encontrar o telefone dentro da captura do browser
+                        col_means = np.mean(arr_rgb, axis=(0, 2))
+                        dark_col_mask = col_means < 130
+                        ch = np.diff(dark_col_mask.astype(int))
+                        sc = list(np.where(ch == 1)[0] + 1)
+                        ec = list(np.where(ch == -1)[0] + 1)
+                        best_x1, best_x2 = 0, w_img
+                        for s, e in zip(sc, ec):
+                            if e - s > best_x2 - best_x1:
+                                best_x1, best_x2 = s, e
+                        zone = arr_rgb[:, max(0,best_x1):min(w_img,best_x2), :]
+                        row_z = np.mean(zone, axis=(1, 2))
+                        dark_row_mask = row_z < 150
+                        cr = np.diff(dark_row_mask.astype(int))
+                        sr = list(np.where(cr == 1)[0] + 1)
+                        er = list(np.where(cr == -1)[0] + 1)
+                        best_y1, best_y2 = 0, h_img
+                        for s, e in zip(sr, er):
+                            if e - s > best_y2 - best_y1:
+                                best_y1, best_y2 = s, e
+                        if best_x2 > best_x1 + 50 and best_y2 > best_y1 + 50:
+                            phone_img = image.crop((best_x1, best_y1, best_x2, best_y2))
                         else:
                             phone_img = image
-
-                        pw, ph = phone_img.size
-                        arr_phone = np.array(phone_img.convert("RGB"))
-
-                        # Extrair número do cabeçalho (top 20%, invertido para leitura)
-                        header = phone_img.crop((0, 0, pw, int(ph * 0.20)))
-                        header_arr = 255 - np.array(header.convert("RGB"))
-                        header_img = Image.fromarray(header_arr.astype(np.uint8)).convert("L")
-                        header_img = ImageEnhance.Contrast(header_img).enhance(3.0)
-                        hw, hh = header_img.size
-                        header_img = header_img.resize((hw*3, hh*3), Image.LANCZOS)
-                        header_text = pytesseract.image_to_string(header_img, lang="por+eng", config="--oem 3 --psm 6")
-                        if not extracted_phone_from_image:
-                            pm = _re.search(r"(\+?\d[\d\s]{7,14}\d)", header_text)
-                            if pm:
-                                extracted_phone_from_image = pm.group(1).strip()
-
-                        # Detectar bolha: brilho entre 35-130 (cinzento WhatsApp dark mode)
-                        row_means = np.mean(arr_phone, axis=(1, 2))
-                        in_bubble = (row_means >= 35) & (row_means <= 130)
-                        changes = np.diff(in_bubble.astype(int))
-                        starts = list(np.where(changes == 1)[0] + 1)
-                        ends = list(np.where(changes == -1)[0] + 1)
-                        if len(starts) == 0 and in_bubble[0]: starts = [0]
-                        if len(ends) == 0 and in_bubble[-1]: ends = [ph]
-
-                        best_start, best_end = 0, 0
-                        for s, e in zip(starts, ends):
-                            if e - s > best_end - best_start:
-                                best_start, best_end = s, e
-
-                        if best_end > best_start + 30:
-                            margin = 40
-                            # Recortar só zona esquerda (60% da largura) onde está o texto
-                            bubble_crop = phone_img.crop((
-                                0, max(0, best_start - margin),
-                                int(pw * 0.62), min(ph, best_end + margin)
-                            ))
-                        else:
-                            bubble_crop = phone_img.crop((
-                                0, int(ph*0.25),
-                                int(pw*0.62), int(ph*0.88)
-                            ))
-
-                        arr_b = np.array(bubble_crop.convert("RGB"))
-                        bubble_brightness = arr_b.mean()
-
-                        # NÃO inverter — o Tesseract lê melhor bolhas WhatsApp sem inversão
-                        msg_gray = bubble_crop.convert("L")
-                        if bubble_brightness > 150:
-                            msg_gray = ImageEnhance.Contrast(msg_gray).enhance(2.0)
-                        else:
-                            msg_gray = ImageEnhance.Contrast(msg_gray).enhance(2.5)
-
-                        msg_gray = ImageEnhance.Sharpness(msg_gray).enhance(2.0)
-                        mw, mh = msg_gray.size
-                        msg_gray = msg_gray.resize((mw*3, mh*3), Image.LANCZOS)
-
-                        raw_text = pytesseract.image_to_string(msg_gray, lang="por+eng", config="--oem 3 --psm 6")
-
-                        skip_pats = [
-                            r"^\d{1,2}:\d{2}\s*(AM|PM)?$",
-                            r"^(sunday|monday|tuesday|wednesday|thursday|friday|saturday|domingo|segunda|terça|quarta|quinta|sexta|sábado)",
-                            r"^(january|february|march|april|may|june|july|august|september|october|november|december|janeiro|fevereiro|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)",
-                            r"^this message is from",
-                            r"^beware of smishing",
-                            r"^block number",
-                            r"^\+?[\d\s\-]{9,}$",
-                            r"^[^\w]*$",
-                            r"^.{1,3}$",
-                        ]
-                        clean = []
-                        for line in raw_text.splitlines():
-                            line = line.strip()
-                            if not line:
-                                continue
-                            if not any(_re.search(p, line, _re.IGNORECASE) for p in skip_pats):
-                                clean.append(line)
-                        text_from_image = "\n".join(clean).strip()
-
-                    # ------------------------------------------------
-                    # Mostrar resultados
-                    # ------------------------------------------------
-                    if extracted_phone_from_image:
-                        st.session_state["detected_phone"] = extracted_phone_from_image
-                        st.info(f"📱 Número detectado na imagem: **{extracted_phone_from_image}**")
                     else:
-                        st.session_state["detected_phone"] = ""
+                        phone_img = image
 
-                    if text_from_image:
-                        st.success("✅ Texto extraído — podes editar antes de analisar:")
-                        # Campo editável — utilizador pode corrigir erros do OCR
-                        text_from_image = st.text_area(
-                            "Texto extraído (editável)",
-                            value=text_from_image,
-                            height=150,
-                            key="ocr_text_edit",
-                            help="O OCR pode cometer erros. Corrige o texto se necessário antes de analisar."
-                        )
-                        st.session_state["ocr_text"] = text_from_image
+                    pw, ph = phone_img.size
+                    arr_phone = np.array(phone_img.convert("RGB"))
+
+                    # Extrair número do cabeçalho (top 20%, invertido para leitura)
+                    header = phone_img.crop((0, 0, pw, int(ph * 0.20)))
+                    header_arr = 255 - np.array(header.convert("RGB"))
+                    header_img = Image.fromarray(header_arr.astype(np.uint8)).convert("L")
+                    header_img = ImageEnhance.Contrast(header_img).enhance(3.0)
+                    hw, hh = header_img.size
+                    header_img = header_img.resize((hw*3, hh*3), Image.LANCZOS)
+                    header_text = pytesseract.image_to_string(header_img, lang="por+eng", config="--oem 3 --psm 6")
+                    if not extracted_phone_from_image:
+                        pm = _re.search(r"(\+?\d[\d\s]{7,14}\d)", header_text)
+                        if pm:
+                            extracted_phone_from_image = pm.group(1).strip()
+
+                    # Detectar bolha: brilho entre 35-130 (cinzento WhatsApp dark mode)
+                    row_means = np.mean(arr_phone, axis=(1, 2))
+                    in_bubble = (row_means >= 35) & (row_means <= 130)
+                    changes = np.diff(in_bubble.astype(int))
+                    starts = list(np.where(changes == 1)[0] + 1)
+                    ends = list(np.where(changes == -1)[0] + 1)
+                    if len(starts) == 0 and in_bubble[0]: starts = [0]
+                    if len(ends) == 0 and in_bubble[-1]: ends = [ph]
+
+                    best_start, best_end = 0, 0
+                    for s, e in zip(starts, ends):
+                        if e - s > best_end - best_start:
+                            best_start, best_end = s, e
+
+                    if best_end > best_start + 30:
+                        margin = 40
+                        # Recortar só zona esquerda (60% da largura) onde está o texto
+                        bubble_crop = phone_img.crop((
+                            0, max(0, best_start - margin),
+                            int(pw * 0.62), min(ph, best_end + margin)
+                        ))
                     else:
-                        st.warning("⚠️ Não foi possível extrair o texto automaticamente.")
-                        st.info("💡 Podes copiar o texto da imagem e colá-lo no separador **✍️ Texto** para analisar.")
-                        # Permitir escrita manual mesmo no tab de imagem
-                        manual_text = st.text_area(
-                            "Ou escreve/cola o texto da mensagem aqui:",
-                            height=150,
-                            key="ocr_manual_fallback",
-                            placeholder="Cola aqui o texto da mensagem que vês na imagem..."
-                        )
-                        if manual_text.strip():
-                            text_from_image = manual_text
-                            st.session_state["ocr_text"] = manual_text
+                        bubble_crop = phone_img.crop((
+                            0, int(ph*0.25),
+                            int(pw*0.62), int(ph*0.88)
+                        ))
 
-                except ImportError:
-                    st.warning("⚠️ OCR não disponível neste ambiente.")
-                except Exception as e:
-                    st.warning(f"⚠️ Erro ao processar imagem: {e}. Cola o texto manualmente.")
+                    arr_b = np.array(bubble_crop.convert("RGB"))
+                    bubble_brightness = arr_b.mean()
 
-        # Pré-preenche o campo com número detectado via session_state
-        if st.session_state.get("detected_phone") and "phone_input" not in st.session_state:
-            st.session_state["phone_input"] = st.session_state["detected_phone"]
-        elif st.session_state.get("detected_phone") and st.session_state.get("phone_input") == "":
-            st.session_state["phone_input"] = st.session_state["detected_phone"]
+                    # NÃO inverter — o Tesseract lê melhor bolhas WhatsApp sem inversão
+                    msg_gray = bubble_crop.convert("L")
+                    if bubble_brightness > 150:
+                        msg_gray = ImageEnhance.Contrast(msg_gray).enhance(2.0)
+                    else:
+                        msg_gray = ImageEnhance.Contrast(msg_gray).enhance(2.5)
 
-        phone_number = st.text_input(
-            "📱 Número que enviou a mensagem (opcional)",
-            placeholder="Ex: +258 84 123 4567",
-            help="Preenchido automaticamente se detectado na imagem.",
-            key="phone_input",
-        )
+                    msg_gray = ImageEnhance.Sharpness(msg_gray).enhance(2.0)
+                    mw, mh = msg_gray.size
+                    msg_gray = msg_gray.resize((mw*3, mh*3), Image.LANCZOS)
 
-        if st.button("🔍 Analisar", type="primary"):
-            # Prioridade: texto manual > texto do OCR editado > texto da tab de texto
-            ocr_text = st.session_state.get("ocr_text", "")
-            if text.strip():
-                final_text = text
-            elif ocr_text.strip():
-                final_text = ocr_text
-            elif "text_from_image" in dir() and text_from_image and text_from_image.strip():
-                final_text = text_from_image
-            else:
-                final_text = ""
+                    raw_text = pytesseract.image_to_string(msg_gray, lang="por+eng", config="--oem 3 --psm 6")
 
-            # Passar imagem ao analyzer se OCR falhou (texto insuficiente)
-            _img_b64_for_analysis = None
-            _img_mime_for_analysis = "image/jpeg"
-            if len(final_text.strip().split()) < 5 and "uploaded" in dir() and uploaded:
-                try:
-                    import base64 as _b64
-                    uploaded.seek(0)
-                    _img_b64_for_analysis = _b64.b64encode(uploaded.read()).decode()
-                    _ext = uploaded.name.split(".")[-1].lower()
-                    _img_mime_for_analysis = "image/jpeg" if _ext in ["jpg","jpeg"] else "image/png"
-                except Exception:
-                    pass
+                    skip_pats = [
+                        r"^\d{1,2}:\d{2}\s*(AM|PM)?$",
+                        r"^(sunday|monday|tuesday|wednesday|thursday|friday|saturday|domingo|segunda|terça|quarta|quinta|sexta|sábado)",
+                        r"^(january|february|march|april|may|june|july|august|september|october|november|december|janeiro|fevereiro|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)",
+                        r"^this message is from",
+                        r"^beware of smishing",
+                        r"^block number",
+                        r"^\+?[\d\s\-]{9,}$",
+                        r"^[^\w]*$",
+                        r"^.{1,3}$",
+                    ]
+                    clean = []
+                    for line in raw_text.splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if not any(_re.search(p, line, _re.IGNORECASE) for p in skip_pats):
+                            clean.append(line)
+                    text_from_image = "\n".join(clean).strip()
 
-            if final_text.strip() or _img_b64_for_analysis:
-                with st.spinner("A analisar..."):
-                    result = analyze_message(
-                        final_text,
-                        phone_number=phone_number.strip() or None,
-                        image_b64=_img_b64_for_analysis,
-                        image_mime=_img_mime_for_analysis,
+                # ------------------------------------------------
+                # Mostrar resultados
+                # ------------------------------------------------
+                if extracted_phone_from_image:
+                    st.session_state["detected_phone"] = extracted_phone_from_image
+                    st.info(f"📱 Número detectado na imagem: **{extracted_phone_from_image}**")
+                else:
+                    st.session_state["detected_phone"] = ""
+
+                if text_from_image:
+                    st.success("✅ Texto extraído — podes editar antes de analisar:")
+                    # Campo editável — utilizador pode corrigir erros do OCR
+                    text_from_image = st.text_area(
+                        "Texto extraído (editável)",
+                        value=text_from_image,
+                        height=150,
+                        key="ocr_text_edit",
+                        help="O OCR pode cometer erros. Corrige o texto se necessário antes de analisar."
                     )
+                    st.session_state["ocr_text"] = text_from_image
+                else:
+                    st.warning("⚠️ Não foi possível extrair o texto automaticamente.")
+                    st.info("💡 Podes copiar o texto da imagem e colá-lo no separador **✍️ Texto** para analisar.")
+                    # Permitir escrita manual mesmo no tab de imagem
+                    manual_text = st.text_area(
+                        "Ou escreve/cola o texto da mensagem aqui:",
+                        height=150,
+                        key="ocr_manual_fallback",
+                        placeholder="Cola aqui o texto da mensagem que vês na imagem..."
+                    )
+                    if manual_text.strip():
+                        text_from_image = manual_text
+                        st.session_state["ocr_text"] = manual_text
 
-                # Guarda resultado no session_state e faz refresh (limpa o campo)
-                st.session_state["analysis_done"] = True
-                st.session_state["last_result"] = result
-                st.session_state["last_text"] = final_text
-                st.session_state["last_phone"] = phone_number
-                st.rerun()
-            else:
-                st.warning("Por favor, insira uma mensagem, carregue uma imagem ou cole o texto manualmente.")
+            except ImportError:
+                st.warning("⚠️ OCR não disponível neste ambiente.")
+            except Exception as e:
+                st.warning(f"⚠️ Erro ao processar imagem: {e}. Cola o texto manualmente.")
+
+# Pré-preenche o campo com número detectado via session_state
+if st.session_state.get("detected_phone") and "phone_input" not in st.session_state:
+    st.session_state["phone_input"] = st.session_state["detected_phone"]
+elif st.session_state.get("detected_phone") and st.session_state.get("phone_input") == "":
+    st.session_state["phone_input"] = st.session_state["detected_phone"]
+
+phone_number = st.text_input(
+    "📱 Número que enviou a mensagem (opcional)",
+    placeholder="Ex: +258 84 123 4567",
+    help="Preenchido automaticamente se detectado na imagem.",
+    key="phone_input",
+)
+
+if st.button("🔍 Analisar", type="primary"):
+    # Prioridade: texto manual > texto do OCR editado > texto da tab de texto
+    ocr_text = st.session_state.get("ocr_text", "")
+    if text.strip():
+        final_text = text
+    elif ocr_text.strip():
+        final_text = ocr_text
+    elif "text_from_image" in dir() and text_from_image and text_from_image.strip():
+        final_text = text_from_image
+    else:
+        final_text = ""
+
+    # Passar imagem ao analyzer se OCR falhou (texto insuficiente)
+    _img_b64_for_analysis = None
+    _img_mime_for_analysis = "image/jpeg"
+    if len(final_text.strip().split()) < 5 and "uploaded" in dir() and uploaded:
+        try:
+            import base64 as _b64
+            uploaded.seek(0)
+            _img_b64_for_analysis = _b64.b64encode(uploaded.read()).decode()
+            _ext = uploaded.name.split(".")[-1].lower()
+            _img_mime_for_analysis = "image/jpeg" if _ext in ["jpg","jpeg"] else "image/png"
+        except Exception:
+            pass
+
+    if final_text.strip() or _img_b64_for_analysis:
+        with st.spinner("A analisar..."):
+            result = analyze_message(
+                final_text,
+                phone_number=phone_number.strip() or None,
+                image_b64=_img_b64_for_analysis,
+                image_mime=_img_mime_for_analysis,
+            )
+
+        # Guarda resultado no session_state e faz refresh (limpa o campo)
+        st.session_state["analysis_done"] = True
+        st.session_state["last_result"] = result
+        st.session_state["last_text"] = final_text
+        st.session_state["last_phone"] = phone_number
+        st.rerun()
+    else:
+        st.warning("Por favor, insira uma mensagem, carregue uma imagem ou cole o texto manualmente.")
 
 
 # ============================================================
 # PÁGINA 2: Pesquisar Número
 # ============================================================
 with _tab_pesquisa:
-    st.title("🔎 Pesquisar Número de Telefone")
 
     search_number = st.text_input("Introduz o número a pesquisar", placeholder="Ex: +258 84 123 4567")
 
@@ -833,7 +829,6 @@ with _tab_pesquisa:
 # PÁGINA 3: Dashboard Estatístico
 # ============================================================
 with _tab_dashboard:
-    st.title("📊 Dashboard Estatístico")
 
     conn = get_connection()
     df = pd.read_sql("SELECT * FROM logs", conn)
@@ -939,10 +934,6 @@ with _tab_dashboard:
 # ============================================================
 if page == "🤖 Modelos ML":
     st.title("🤖 Modelos de Machine Learning")
-    st.markdown("""
-    O sistema aprende automaticamente com as mensagens analisadas.
-    Quanto mais mensagens forem submetidas e avaliadas, mais preciso fica.
-    """)
 
     status = get_model_status()
     st.subheader("📊 Estado dos Modelos")
