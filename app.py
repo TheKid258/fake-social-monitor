@@ -71,11 +71,9 @@ if not os.getenv("GOOGLE_SAFE_BROWSING_API_KEY"):
         "Cria um ficheiro `.env` com `GOOGLE_SAFE_BROWSING_API_KEY=a_tua_chave`."
     )
 
-# Navegação principal
-nav_options = ["📄 Analisar Mensagem", "🔎 Pesquisar Número", "📊 Dashboard Estatístico"]
-selected_nav = st.sidebar.selectbox("Navegação", nav_options)
-
-# Acesso admin escondido
+# ============================================================
+# SIDEBAR — apenas Acesso Admin
+# ============================================================
 with st.sidebar.expander("🔒 Acesso Admin"):
     admin_input = st.text_input("Senha", type="password", key="admin_pw")
     ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
@@ -90,17 +88,40 @@ with st.sidebar.expander("🔒 Acesso Admin"):
             st.session_state["page_override"] = "🤖 Modelos ML"
             st.rerun()
 
-# Determinar página activa:
-# O override só é limpo quando o utilizador muda o selectbox manualmente
-# enquanto já está fora da página ML (ou seja, saiu voluntariamente).
+# ============================================================
+# NAVEGAÇÃO PRINCIPAL — botões no topo da página
+# ============================================================
 if st.session_state.get("page_override") == "🤖 Modelos ML" and st.session_state.get("is_admin"):
     page = "🤖 Modelos ML"
 else:
-    # Limpa override e admin apenas quando muda para "Analisar Mensagem" sem override activo
-    if selected_nav == "📄 Analisar Mensagem" and not st.session_state.get("page_override"):
-        st.session_state["is_admin"] = False
     st.session_state["page_override"] = None
-    page = selected_nav
+
+    if "active_page" not in st.session_state:
+        st.session_state["active_page"] = "📄 Analisar Mensagem"
+
+    col_t1, col_t2, col_t3 = st.columns(3)
+    with col_t1:
+        if st.button("📄 Analisar Mensagem",
+                     use_container_width=True,
+                     type="primary" if st.session_state["active_page"] == "📄 Analisar Mensagem" else "secondary"):
+            st.session_state["active_page"] = "📄 Analisar Mensagem"
+            st.session_state["is_admin"] = False
+            st.rerun()
+    with col_t2:
+        if st.button("🔎 Pesquisar Número",
+                     use_container_width=True,
+                     type="primary" if st.session_state["active_page"] == "🔎 Pesquisar Número" else "secondary"):
+            st.session_state["active_page"] = "🔎 Pesquisar Número"
+            st.rerun()
+    with col_t3:
+        if st.button("📊 Dashboard",
+                     use_container_width=True,
+                     type="primary" if st.session_state["active_page"] == "📊 Dashboard Estatístico" else "secondary"):
+            st.session_state["active_page"] = "📊 Dashboard Estatístico"
+            st.rerun()
+
+    st.divider()
+    page = st.session_state["active_page"]
 
 
 # ============================================================
