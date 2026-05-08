@@ -96,32 +96,16 @@ if st.session_state.get("page_override") == "🤖 Modelos ML" and st.session_sta
 else:
     st.session_state["page_override"] = None
 
-    if "active_page" not in st.session_state:
-        st.session_state["active_page"] = "📄 Analisar Mensagem"
-
-    col_t1, col_t2, col_t3 = st.columns(3)
-    with col_t1:
-        if st.button("📄 Analisar Mensagem",
-                     use_container_width=True,
-                     type="primary" if st.session_state["active_page"] == "📄 Analisar Mensagem" else "secondary"):
-            st.session_state["active_page"] = "📄 Analisar Mensagem"
-            st.session_state["is_admin"] = False
-            st.rerun()
-    with col_t2:
-        if st.button("🔎 Pesquisar Número",
-                     use_container_width=True,
-                     type="primary" if st.session_state["active_page"] == "🔎 Pesquisar Número" else "secondary"):
-            st.session_state["active_page"] = "🔎 Pesquisar Número"
-            st.rerun()
-    with col_t3:
-        if st.button("📊 Dashboard",
-                     use_container_width=True,
-                     type="primary" if st.session_state["active_page"] == "📊 Dashboard Estatístico" else "secondary"):
-            st.session_state["active_page"] = "📊 Dashboard Estatístico"
-            st.rerun()
-
-    st.divider()
-    page = st.session_state["active_page"]
+    # Tabs de navegação estilo browser (linha de destaque no activo)
+    _tab_analise, _tab_pesquisa, _tab_dashboard = st.tabs([
+        "📄 Analisar Mensagem",
+        "🔎 Pesquisar Número",
+        "📊 Dashboard"
+    ])
+    page = "_tabs_mode"
+    st.session_state["_tab_analise"] = _tab_analise
+    st.session_state["_tab_pesquisa"] = _tab_pesquisa
+    st.session_state["_tab_dashboard"] = _tab_dashboard
 
 
 # ============================================================
@@ -230,7 +214,7 @@ def generate_pdf(result: dict, message: str, phone_number: str = None) -> bytes:
 # ============================================================
 # PÁGINA 1: Analisar Mensagem
 # ============================================================
-if page == "📄 Analisar Mensagem":
+with _tab_analise:
     st.title("🔍 Analisar Mensagem")
 
     st.markdown("""
@@ -753,7 +737,7 @@ if page == "📄 Analisar Mensagem":
 # ============================================================
 # PÁGINA 2: Pesquisar Número
 # ============================================================
-elif page == "🔎 Pesquisar Número":
+with _tab_pesquisa:
     st.title("🔎 Pesquisar Número de Telefone")
 
     search_number = st.text_input("Introduz o número a pesquisar", placeholder="Ex: +258 84 123 4567")
@@ -848,7 +832,7 @@ elif page == "🔎 Pesquisar Número":
 # ============================================================
 # PÁGINA 3: Dashboard Estatístico
 # ============================================================
-elif page == "📊 Dashboard Estatístico":
+with _tab_dashboard:
     st.title("📊 Dashboard Estatístico")
 
     conn = get_connection()
@@ -953,7 +937,7 @@ elif page == "📊 Dashboard Estatístico":
 # ============================================================
 # PÁGINA 4: Modelos ML (apenas admin)
 # ============================================================
-elif page == "🤖 Modelos ML":
+if page == "🤖 Modelos ML":
     st.title("🤖 Modelos de Machine Learning")
     st.markdown("""
     O sistema aprende automaticamente com as mensagens analisadas.
