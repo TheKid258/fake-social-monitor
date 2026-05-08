@@ -381,6 +381,8 @@ else:
     pass
 
 with _tab_texto:
+    st.title("🔍 Analisar Mensagem")
+    st.markdown("Analisa mensagens para identificar golpes digitais, links suspeitos, promoções de apostas e fake news.")
     text = st.text_area(
         "Cole aqui a mensagem suspeita...",
         placeholder="Ex: URGENTE! Clique agora no link bit.ly/xxxxx e confirme os seus dados!",
