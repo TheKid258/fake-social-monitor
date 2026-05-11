@@ -91,25 +91,25 @@ with st.sidebar.expander("🔒 Acesso Admin"):
 # ============================================================
 # NAVEGAÇÃO PRINCIPAL — botões no topo da página
 # ============================================================
+# Tabs sempre criados no nível raiz (fora de qualquer if/else)
+(
+    _tab_texto,
+    _tab_imagem,
+    _tab_spacer,
+    _tab_pesquisa,
+    _tab_dashboard,
+) = st.tabs([
+    "✍️ Texto",
+    "🖼️ Imagem (OCR)",
+    "  |  ",
+    "🔎 Pesquisar Número",
+    "📊 Dashboard",
+])
+
 if st.session_state.get("page_override") == "🤖 Modelos ML" and st.session_state.get("is_admin"):
     page = "🤖 Modelos ML"
 else:
     st.session_state["page_override"] = None
-
-    # Um único st.tabs com navegação + sub-tabs da análise todos na mesma linha
-    (
-        _tab_texto,
-        _tab_imagem,
-        _tab_spacer,
-        _tab_pesquisa,
-        _tab_dashboard,
-    ) = st.tabs([
-        "✍️ Texto",
-        "🖼️ Imagem (OCR)",
-        "  |  ",
-        "🔎 Pesquisar Número",
-        "📊 Dashboard",
-    ])
     page = "_tabs_mode"
 
 
