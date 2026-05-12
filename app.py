@@ -217,6 +217,54 @@ def generate_pdf(result: dict, message: str, phone_number: str = None) -> bytes:
 
 
 # ============================================================
+# FUNÇÃO: Lógica de Análise (Centralizada)
+# ============================================================
+def handle_analysis(phone_val, text_val, ocr_val, uploaded_val):
+    if not phone_val:
+        phone_val = ""
+
+    # Prioridade: texto manual > texto do OCR
+    final_text = ""
+    if text_val and text_val.strip():
+        final_text = text_val
+    elif ocr_val and ocr_val.strip():
+        final_text = ocr_val
+    else:
+        final_text = ""
+
+    # Passar imagem ao analyzer se OCR falhou (texto insuficiente)
+    _img_b64_for_analysis = None
+    _img_mime_for_analysis = "image/jpeg"
+    if len(final_text.strip().split()) < 5 and uploaded_val:
+        try:
+            import base64 as _b64
+            uploaded_val.seek(0)
+            _img_b64_for_analysis = _b64.b64encode(uploaded_val.read()).decode()
+            _ext = uploaded_val.name.split(".")[-1].lower()
+            _img_mime_for_analysis = "image/jpeg" if _ext in ["jpg","jpeg"] else "image/png"
+        except Exception:
+            pass
+
+    if final_text.strip() or _img_b64_for_analysis:
+        with st.spinner("A analisar..."):
+            result = analyze_message(
+                final_text,
+                phone_number=phone_val.strip() or None,
+                image_b64=_img_b64_for_analysis,
+                image_mime=_img_mime_for_analysis,
+            )
+
+        # Guarda resultado no session_state e faz refresh
+        st.session_state["analysis_done"] = True
+        st.session_state["last_result"] = result
+        st.session_state["last_text"] = final_text
+        st.session_state["last_phone"] = phone_val
+        st.rerun()
+    else:
+        st.warning("Por favor, insira uma mensagem, carregue uma imagem ou cole o texto manualmente.")
+
+
+# ============================================================
 # PÁGINA 1: Analisar Mensagem
 # ============================================================
 # Se acabou de ser feita uma análise, mostra os resultados e um botão para nova análise
@@ -389,6 +437,18 @@ with _tab_texto:
         height=180,
         key="msg_input",
     )
+
+    # Campo de número e botão específicos para esta tab
+    phone_t = st.text_input(
+        "📱 Número que enviou a mensagem (opcional)",
+        placeholder="Ex: +258 84 123 4567",
+        key="phone_input_texto",
+        value=st.session_state.get("phone_input", st.session_state.get("detected_phone", ""))
+    )
+    st.session_state["phone_input"] = phone_t
+
+    if st.button("🔍 Analisar", type="primary", key="btn_analisar_texto"):
+        handle_analysis(phone_t, text, "", None)
 
 with _tab_imagem:
         uploaded = st.file_uploader("Carrega uma imagem com a mensagem suspeita", type=["png", "jpg", "jpeg"])
@@ -676,61 +736,23 @@ with _tab_imagem:
             except Exception as e:
                 st.warning(f"⚠️ Erro ao processar imagem: {e}. Cola o texto manualmente.")
 
-# Pré-preenche o campo com número detectado via session_state
-if st.session_state.get("detected_phone") and "phone_input" not in st.session_state:
-    st.session_state["phone_input"] = st.session_state["detected_phone"]
-elif st.session_state.get("detected_phone") and st.session_state.get("phone_input") == "":
-    st.session_state["phone_input"] = st.session_state["detected_phone"]
+        # Campo de número e botão específicos para esta tab (Imagem)
+        phone_i = st.text_input(
+            "📱 Número que enviou a mensagem (opcional)",
+            placeholder="Ex: +258 84 123 4567",
+            help="Preenchido automaticamente se detectado na imagem.",
+            key="phone_input_imagem",
+            value=st.session_state.get("phone_input", st.session_state.get("detected_phone", ""))
+        )
+        st.session_state["phone_input"] = phone_i
 
-phone_number = st.text_input(
-    "📱 Número que enviou a mensagem (opcional)",
-    placeholder="Ex: +258 84 123 4567",
-    help="Preenchido automaticamente se detectado na imagem.",
-    key="phone_input",
-)
+        if st.button("🔍 Analisar", type="primary", key="btn_analisar_imagem"):
+            # Ocr_text já está no session_state["ocr_text"] ou na variável text_from_image
+            _ocr_to_pass = st.session_state.get("ocr_text", "")
+            if not _ocr_to_pass and 'text_from_image' in locals():
+                _ocr_to_pass = text_from_image
 
-if st.button("🔍 Analisar", type="primary"):
-    # Prioridade: texto manual > texto do OCR editado > texto da tab de texto
-    ocr_text = st.session_state.get("ocr_text", "")
-    if text.strip():
-        final_text = text
-    elif ocr_text.strip():
-        final_text = ocr_text
-    elif "text_from_image" in dir() and text_from_image and text_from_image.strip():
-        final_text = text_from_image
-    else:
-        final_text = ""
-
-    # Passar imagem ao analyzer se OCR falhou (texto insuficiente)
-    _img_b64_for_analysis = None
-    _img_mime_for_analysis = "image/jpeg"
-    if len(final_text.strip().split()) < 5 and "uploaded" in dir() and uploaded:
-        try:
-            import base64 as _b64
-            uploaded.seek(0)
-            _img_b64_for_analysis = _b64.b64encode(uploaded.read()).decode()
-            _ext = uploaded.name.split(".")[-1].lower()
-            _img_mime_for_analysis = "image/jpeg" if _ext in ["jpg","jpeg"] else "image/png"
-        except Exception:
-            pass
-
-    if final_text.strip() or _img_b64_for_analysis:
-        with st.spinner("A analisar..."):
-            result = analyze_message(
-                final_text,
-                phone_number=phone_number.strip() or None,
-                image_b64=_img_b64_for_analysis,
-                image_mime=_img_mime_for_analysis,
-            )
-
-        # Guarda resultado no session_state e faz refresh (limpa o campo)
-        st.session_state["analysis_done"] = True
-        st.session_state["last_result"] = result
-        st.session_state["last_text"] = final_text
-        st.session_state["last_phone"] = phone_number
-        st.rerun()
-    else:
-        st.warning("Por favor, insira uma mensagem, carregue uma imagem ou cole o texto manualmente.")
+            handle_analysis(phone_i, "", _ocr_to_pass, uploaded if 'uploaded' in locals() else None)
 
 
 # ============================================================
