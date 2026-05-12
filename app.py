@@ -85,7 +85,108 @@ with st.sidebar.expander("🔒 Acesso Admin"):
             st.rerun()
 
 # ============================================================
-# NAVEGAÇÃO — Tabs principais
+# ROUTING — decidir a página ANTES de criar qualquer widget
+# Se for página ML, renderiza-a aqui e para o script com st.stop().
+# Assim os tabs nunca chegam a ser criados.
+# ============================================================
+_is_ml_page = (
+    st.session_state.get("page_override") == "🤖 Modelos ML"
+    and st.session_state.get("is_admin")
+)
+
+if _is_ml_page:
+    # ----------------------------------------------------------
+    # PÁGINA ML — renderizada aqui, script pára no st.stop()
+    # ----------------------------------------------------------
+    st.title("🤖 Modelos de Machine Learning")
+
+    _ml_status = get_model_status()
+    st.subheader("📊 Estado dos Modelos")
+
+    _c1, _c2, _c3 = st.columns(3)
+    with _c1:
+        _nb = _ml_status["naive_bayes"]
+        if _nb["trained"]:
+            st.success(f"✅ **Naive Bayes**\nTreinado: {_nb['last_trained']}\nTamanho: {_nb['size_kb']} KB")
+        else:
+            st.warning("⏳ **Naive Bayes**\nAinda não treinado")
+    with _c2:
+        _rf = _ml_status["random_forest"]
+        if _rf["trained"]:
+            st.success(f"✅ **Random Forest**\nTreinado: {_rf['last_trained']}\nTamanho: {_rf['size_kb']} KB")
+        else:
+            st.warning("⏳ **Random Forest**\nAinda não treinado")
+    with _c3:
+        st.info(f"🧠 **Claude (Anthropic)**\n{_ml_status['claude']['note']}")
+
+    st.divider()
+
+    _texts, _labels = get_training_data()
+    st.subheader("📚 Dados de Treino Disponíveis")
+    _dc1, _dc2 = st.columns(2)
+    _dc1.metric("Total de amostras", len(_texts))
+    _dc2.metric("Mínimo necessário", _ml_status["min_samples"])
+
+    if len(_texts) > 0:
+        from collections import Counter
+        _lc = Counter(_labels)
+        _df_lbl = pd.DataFrame(list(_lc.items()), columns=["Tipo", "Quantidade"])
+        _fig_lbl = px.bar(_df_lbl, x="Tipo", y="Quantidade", color="Tipo",
+                          color_discrete_sequence=px.colors.qualitative.Bold)
+        st.plotly_chart(_fig_lbl, use_container_width=True)
+
+    st.divider()
+
+    st.subheader("⚙️ Treino Automático")
+    if len(_texts) >= _ml_status["min_samples"]:
+        st.success(f"✅ Dados suficientes para treinar ({len(_texts)} amostras).")
+        if should_auto_train(_texts, _labels):
+            st.info("🔄 O sistema vai treinar automaticamente na próxima análise.")
+    else:
+        _faltam = _ml_status["min_samples"] - len(_texts)
+        st.warning(f"⏳ Faltam **{_faltam}** amostras. Continua a submeter e avaliar mensagens!")
+
+    st.divider()
+
+    st.subheader("🔧 Treino Manual")
+    if st.button("🚀 Treinar Modelos Agora"):
+        if len(_texts) < _ml_status["min_samples"]:
+            st.error(f"❌ Dados insuficientes. Mínimo: {_ml_status['min_samples']}. Actual: {len(_texts)}")
+        else:
+            with st.spinner("A treinar os modelos..."):
+                _train_result = train_models(_texts, _labels)
+            if _train_result["success"]:
+                st.success("✅ Modelos treinados com sucesso!")
+                for _mn, _mi in _train_result["models"].items():
+                    if "accuracy" in _mi:
+                        st.metric(f"{_mn.replace('_', ' ').title()} — Precisão", f"{_mi['accuracy']}%")
+                    elif "error" in _mi:
+                        st.error(f"Erro em {_mn}: {_mi['error']}")
+            else:
+                st.error(f"❌ Erro: {_train_result['error']}")
+
+    st.divider()
+
+    st.subheader("🔑 Configuração Claude API")
+    if os.getenv("ANTHROPIC_API_KEY"):
+        st.success("✅ ANTHROPIC_API_KEY configurada — Claude disponível para classificação.")
+    else:
+        st.warning(
+            "⚠️ ANTHROPIC_API_KEY não configurada. Adiciona no Streamlit Cloud em Settings → Secrets:\n"
+            "```\nANTHROPIC_API_KEY = 'sk-ant-...'\n```"
+        )
+
+    st.divider()
+    if st.button("🔓 Sair do modo Admin"):
+        st.session_state["is_admin"] = False
+        st.session_state["page_override"] = None
+        st.rerun()
+
+    # Para o script aqui — os tabs e restante conteúdo não são renderizados
+    st.stop()
+
+# ============================================================
+# TABS — só chegamos aqui se NÃO for página ML
 # ============================================================
 (
     _tab_texto,
@@ -100,12 +201,6 @@ with st.sidebar.expander("🔒 Acesso Admin"):
     "🔎 Pesquisar Número",
     "📊 Dashboard",
 ])
-
-if st.session_state.get("page_override") == "🤖 Modelos ML" and st.session_state.get("is_admin"):
-    page = "🤖 Modelos ML"
-else:
-    st.session_state["page_override"] = None
-    page = "_tabs_mode"
 
 
 # ============================================================
@@ -945,89 +1040,3 @@ with _tab_dashboard:
             file_name=f"analises_{_now_cat().strftime('%Y%m%d')}.csv",
             mime="text/csv",
         )
-
-
-# ============================================================
-# PÁGINA ML (apenas admin)
-# ============================================================
-if page == "🤖 Modelos ML":
-    st.title("🤖 Modelos de Machine Learning")
-
-    status = get_model_status()
-    st.subheader("📊 Estado dos Modelos")
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        nb_s = status["naive_bayes"]
-        if nb_s["trained"]:
-            st.success(f"✅ **Naive Bayes**\nTreinado: {nb_s['last_trained']}\nTamanho: {nb_s['size_kb']} KB")
-        else:
-            st.warning("⏳ **Naive Bayes**\nAinda não treinado")
-    with col2:
-        rf_s = status["random_forest"]
-        if rf_s["trained"]:
-            st.success(f"✅ **Random Forest**\nTreinado: {rf_s['last_trained']}\nTamanho: {rf_s['size_kb']} KB")
-        else:
-            st.warning("⏳ **Random Forest**\nAinda não treinado")
-    with col3:
-        st.info(f"🧠 **Claude (Anthropic)**\n{status['claude']['note']}")
-
-    st.divider()
-
-    texts, labels = get_training_data()
-    st.subheader("📚 Dados de Treino Disponíveis")
-    col_d1, col_d2 = st.columns(2)
-    col_d1.metric("Total de amostras", len(texts))
-    col_d2.metric("Mínimo necessário", status["min_samples"])
-
-    if len(texts) > 0:
-        from collections import Counter
-        label_counts = Counter(labels)
-        df_labels = pd.DataFrame(list(label_counts.items()), columns=["Tipo", "Quantidade"])
-        fig = px.bar(df_labels, x="Tipo", y="Quantidade", color="Tipo",
-                     color_discrete_sequence=px.colors.qualitative.Bold)
-        st.plotly_chart(fig, use_container_width=True)
-
-    st.divider()
-
-    st.subheader("⚙️ Treino Automático")
-    if len(texts) >= status["min_samples"]:
-        st.success(f"✅ Dados suficientes para treinar ({len(texts)} amostras).")
-        if should_auto_train(texts, labels):
-            st.info("🔄 O sistema vai treinar automaticamente na próxima análise.")
-    else:
-        faltam = status["min_samples"] - len(texts)
-        st.warning(f"⏳ Faltam **{faltam}** amostras. Continua a submeter e avaliar mensagens!")
-
-    st.divider()
-
-    st.subheader("🔧 Treino Manual")
-    if st.button("🚀 Treinar Modelos Agora"):
-        if len(texts) < status["min_samples"]:
-            st.error(f"❌ Dados insuficientes. Mínimo: {status['min_samples']}. Actual: {len(texts)}")
-        else:
-            with st.spinner("A treinar os modelos..."):
-                train_result = train_models(texts, labels)
-            if train_result["success"]:
-                st.success("✅ Modelos treinados com sucesso!")
-                for model_name, info in train_result["models"].items():
-                    if "accuracy" in info:
-                        st.metric(f"{model_name.replace('_', ' ').title()} — Precisão", f"{info['accuracy']}%")
-                    elif "error" in info:
-                        st.error(f"Erro em {model_name}: {info['error']}")
-            else:
-                st.error(f"❌ Erro: {train_result['error']}")
-
-    st.divider()
-
-    st.subheader("🔑 Configuração Claude API")
-    if os.getenv("ANTHROPIC_API_KEY"):
-        st.success("✅ ANTHROPIC_API_KEY configurada — Claude disponível para classificação.")
-    else:
-        st.warning("⚠️ ANTHROPIC_API_KEY não configurada. Adiciona no Streamlit Cloud em Settings → Secrets:\n```\nANTHROPIC_API_KEY = 'sk-ant-...'\n```")
-
-    st.divider()
-    if st.button("🔓 Sair do modo Admin"):
-        st.session_state["is_admin"] = False
-        st.session_state["page_override"] = None
-        st.rerun()
