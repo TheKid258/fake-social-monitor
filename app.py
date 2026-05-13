@@ -78,6 +78,14 @@ if "imagem_phone" not in st.session_state:
 if "phone_imagem_value" not in st.session_state:
     st.session_state["phone_imagem_value"] = ""
 
+# Pedidos de remoção da blacklist submetidos pelo público
+if "removal_requests" not in st.session_state:
+    st.session_state["removal_requests"] = []  # lista de dicts {phone, reason, date}
+
+# Controla se o campo de senha do admin já foi usado (para ocultar após login)
+if "admin_pw_submitted" not in st.session_state:
+    st.session_state["admin_pw_submitted"] = False
+
 # ============================================================
 # SIDEBAR — Aviso API + Acesso Admin (renderizado UMA vez)
 # ============================================================
@@ -88,17 +96,33 @@ if not os.getenv("GOOGLE_SAFE_BROWSING_API_KEY"):
     )
 
 with st.sidebar.expander("🔒 Acesso Admin"):
-    admin_input = st.text_input("Senha", type="password", key="admin_pw")
     ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 
-    if admin_input and admin_input != ADMIN_PASSWORD:
-        st.error("Senha incorrecta.")
-
-    if admin_input == ADMIN_PASSWORD and admin_input != "":
-        st.session_state["is_admin"] = True
+    if not st.session_state["is_admin"]:
+        # Só mostra o campo de senha enquanto não estiver autenticado
+        if not st.session_state["admin_pw_submitted"]:
+            admin_input = st.text_input("Senha", type="password", key="admin_pw")
+            if admin_input:
+                if admin_input == ADMIN_PASSWORD:
+                    st.session_state["is_admin"] = True
+                    st.session_state["admin_pw_submitted"] = True
+                    st.rerun()
+                else:
+                    st.error("Senha incorrecta.")
+        else:
+            # Submetida mas ainda não autenticada (não deve acontecer)
+            st.session_state["admin_pw_submitted"] = False
+            st.rerun()
+    else:
+        # Admin autenticado — campo de senha não aparece
         st.success("✅ Acesso admin activo")
         if st.button("🤖 Ir para Modelos ML"):
             st.session_state["page_override"] = "🤖 Modelos ML"
+            st.rerun()
+        if st.button("🔓 Sair do modo Admin", key="sidebar_logout"):
+            st.session_state["is_admin"] = False
+            st.session_state["admin_pw_submitted"] = False
+            st.session_state["page_override"] = None
             st.rerun()
 
 # ============================================================
@@ -194,10 +218,57 @@ if _is_ml_page:
         )
 
     st.divider()
-    if st.button("🔓 Sair do modo Admin"):
+    # Botão de logout também disponível na página ML
+    if st.button("🔓 Sair do modo Admin", key="ml_page_logout"):
         st.session_state["is_admin"] = False
+        st.session_state["admin_pw_submitted"] = False
         st.session_state["page_override"] = None
         st.rerun()
+
+    # ----------------------------------------------------------
+    # GESTÃO DE BLACKLIST — só visível para admin
+    # ----------------------------------------------------------
+    st.divider()
+    st.title("🚫 Gestão da Blacklist")
+
+    bl_col1, bl_col2 = st.columns(2)
+
+    with bl_col1:
+        st.subheader("📋 Números na blacklist")
+        _blacklist_admin = get_blacklist()
+        if _blacklist_admin:
+            for _entry in _blacklist_admin:
+                with st.expander(f"🚫 {_entry['phone_number']}"):
+                    st.write(f"**Motivo:** {_entry['reason'] or 'Não especificado'}")
+                    st.caption(f"Adicionado em: {_entry['date_added']}")
+                    if st.button("🗑️ Remover da blacklist", key=f"admin_rm_{_entry['phone_number']}"):
+                        remove_from_blacklist(_entry["phone_number"])
+                        st.success(f"✅ Número {_entry['phone_number']} removido!")
+                        st.rerun()
+        else:
+            st.info("Blacklist vazia.")
+
+    with bl_col2:
+        st.subheader("📨 Pedidos de Remoção")
+        _requests = st.session_state.get("removal_requests", [])
+        if _requests:
+            for _i, _req in enumerate(_requests):
+                with st.expander(f"📩 {_req['phone']} — {_req['date']}"):
+                    st.write(f"**Motivo do pedido:** {_req['reason']}")
+                    _rc1, _rc2 = st.columns(2)
+                    with _rc1:
+                        if st.button("✅ Aprovar e remover", key=f"req_approve_{_i}"):
+                            remove_from_blacklist(_req["phone"])
+                            st.session_state["removal_requests"].pop(_i)
+                            st.success(f"Número {_req['phone']} removido da blacklist.")
+                            st.rerun()
+                    with _rc2:
+                        if st.button("❌ Rejeitar pedido", key=f"req_reject_{_i}"):
+                            st.session_state["removal_requests"].pop(_i)
+                            st.warning("Pedido rejeitado.")
+                            st.rerun()
+        else:
+            st.info("Não há pedidos de remoção pendentes.")
 
     # Para o script aqui — os tabs e restante conteúdo não são renderizados
     st.stop()
@@ -218,6 +289,72 @@ if _is_ml_page:
     "🔎 Pesquisar Número",
     "📊 Dashboard",
 ])
+
+
+
+# ============================================================
+# FUNÇÃO: Normalizar número de telefone para pesquisa flexível
+# ============================================================
+def _normalize_phone(phone: str) -> str:
+    """Remove espaços, hífens e parênteses. Devolve só dígitos."""
+    import re
+    return re.sub(r"[\s\-\(\)\+]", "", phone).lstrip("0")
+
+def _phones_match(stored: str, query: str) -> bool:
+    """
+    Compara dois números de forma flexível:
+    - Ignora espaços, hífens, parênteses e sinal +
+    - Verifica sufixo: '12345678' bate com '+25812345678'
+    """
+    s = _normalize_phone(stored or "")
+    q = _normalize_phone(query or "")
+    if not s or not q:
+        return False
+    return s == q or s.endswith(q) or q.endswith(s)
+
+
+# ============================================================
+# FUNÇÃO: Pesquisa flexível de número na BD
+# ============================================================
+def _lookup_phone_flexible(query: str):
+    """
+    Tenta encontrar o número na BD usando correspondência flexível.
+    Primeiro tenta lookup_phone exacto, depois varre phone_numbers.
+    """
+    # 1. Tentativa exacta
+    result = lookup_phone(query.strip())
+    if result:
+        return result
+
+    # 2. Varredura flexível
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT phone_number FROM phone_numbers")
+        all_phones = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        for stored in all_phones:
+            if _phones_match(stored, query):
+                return lookup_phone(stored)
+    except Exception:
+        pass
+    return None
+
+def _is_blacklisted_flexible(query: str) -> tuple:
+    """
+    Verifica blacklist com correspondência flexível.
+    Devolve (bool, phone_number_encontrado).
+    """
+    from database import get_blacklist
+    if is_blacklisted(query.strip()):
+        return True, query.strip()
+    try:
+        for entry in get_blacklist():
+            if _phones_match(entry["phone_number"], query):
+                return True, entry["phone_number"]
+    except Exception:
+        pass
+    return False, None
 
 
 # ============================================================
@@ -1025,10 +1162,12 @@ with _tab_pesquisa:
 
     if st.button("🔍 Pesquisar"):
         if search_number.strip():
-            if is_blacklisted(search_number.strip()):
+            # FIX: pesquisa flexível — encontra mesmo com formato diferente
+            bl_found, bl_phone = _is_blacklisted_flexible(search_number.strip())
+            if bl_found:
                 st.error(f"🚫 O número **{search_number}** está na **blacklist** de números confirmadamente perigosos!")
 
-            data = lookup_phone(search_number.strip())
+            data = _lookup_phone_flexible(search_number.strip())
 
             if data is None:
                 st.success(f"✅ O número **{search_number}** não tem registos suspeitos neste sistema.")
@@ -1051,7 +1190,10 @@ with _tab_pesquisa:
 
                 if data["messages"]:
                     st.subheader("📨 Mensagens Anteriores")
-                    for msg in data["messages"]:
+                    # FIX: mais recente primeiro (já vem ORDER BY date DESC da BD,
+                    # mas garantimos aqui com sorted para consistência)
+                    msgs_sorted = sorted(data["messages"], key=lambda m: m["date"], reverse=True)
+                    for msg in msgs_sorted:
                         with st.expander(f"[{msg['date']}] {msg['risk_level']} — {msg['risk_type']}"):
                             st.write(msg["message"])
                             st.caption(f"Pontuação: {msg['score']}")
@@ -1069,8 +1211,9 @@ with _tab_pesquisa:
         st.info("Ainda não há números registados.")
 
     st.divider()
-    st.subheader("🚫 Blacklist Manual")
-    col_add, col_list = st.columns(2)
+    st.subheader("🚫 Blacklist")
+
+    col_add, col_request = st.columns(2)
 
     with col_add:
         st.markdown("**Adicionar número à blacklist**")
@@ -1079,34 +1222,34 @@ with _tab_pesquisa:
         if st.button("🚫 Adicionar"):
             if bl_number.strip():
                 add_to_blacklist(bl_number.strip(), bl_reason)
-                st.success(f"Número {bl_number} adicionado!")
+                st.success(f"Número {bl_number} adicionado à blacklist!")
             else:
                 st.warning("Introduz um número.")
 
-    with col_list:
-        st.markdown("**Números na blacklist**")
-        blacklist = get_blacklist()
-        if blacklist:
-            for entry in blacklist:
-                with st.expander(f"🚫 {entry['phone_number']}"):
-                    st.write(f"Motivo: {entry['reason'] or 'Não especificado'}")
-                    st.caption(f"Adicionado em: {entry['date_added']}")
-                    with st.container():
-                        admin_rem_pw = st.text_input(
-                            "🔒 Senha admin para remover",
-                            type="password",
-                            key=f"rm_pw_{entry['phone_number']}"
-                        )
-                        ADMIN_PW = os.getenv("ADMIN_PASSWORD", "admin123")
-                        if st.button("🗑️ Remover da blacklist", key=f"rm_{entry['phone_number']}"):
-                            if admin_rem_pw == ADMIN_PW:
-                                remove_from_blacklist(entry["phone_number"])
-                                st.success("Número removido da blacklist.")
-                                st.rerun()
-                            else:
-                                st.error("❌ Senha incorrecta. Não tem permissão para remover.")
-        else:
-            st.info("Blacklist vazia.")
+    with col_request:
+        # FIX: campo público de pedido de remoção — sem senha, sem lista da blacklist
+        st.markdown("**Solicitar remoção da blacklist**")
+        st.caption("Se o teu número foi adicionado por engano, podes submeter um pedido de remoção. Um administrador irá analisar.")
+        req_number = st.text_input("Número a remover", placeholder="+258 84 000 0000", key="req_num")
+        req_reason = st.text_input("Motivo do pedido", placeholder="Ex: Número adicionado por engano", key="req_reason")
+        if st.button("📨 Submeter Pedido"):
+            if req_number.strip():
+                from datetime import datetime
+                from zoneinfo import ZoneInfo
+                _cat = ZoneInfo("Africa/Maputo")
+                pedido = {
+                    "phone": req_number.strip(),
+                    "reason": req_reason.strip() or "Sem motivo indicado",
+                    "date": datetime.now(_cat).strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                st.session_state["removal_requests"].append(pedido)
+                st.success("✅ Pedido submetido com sucesso! Um administrador irá analisar em breve.")
+            else:
+                st.warning("Introduz o número para o pedido.")
+
+    # FIX: gestão da blacklist (ver lista + remover) movida para o painel Admin
+    st.caption("ℹ️ A gestão completa da blacklist (ver lista e remover números) está disponível apenas para administradores no painel de Acesso Admin.")
+
 
 
 # ============================================================
