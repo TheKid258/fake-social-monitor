@@ -48,18 +48,30 @@ if "is_admin" not in st.session_state:
     st.session_state["is_admin"] = False
 if "page_override" not in st.session_state:
     st.session_state["page_override"] = None
-if "analysis_done" not in st.session_state:
-    st.session_state["analysis_done"] = False
-if "last_result" not in st.session_state:
-    st.session_state["last_result"] = None
-if "last_text" not in st.session_state:
-    st.session_state["last_text"] = ""
-if "last_phone" not in st.session_state:
-    st.session_state["last_phone"] = ""
 if "detected_phone" not in st.session_state:
     st.session_state["detected_phone"] = ""
 if "ocr_text" not in st.session_state:
     st.session_state["ocr_text"] = ""
+
+# Estado separado para tab Texto
+if "texto_done" not in st.session_state:
+    st.session_state["texto_done"] = False
+if "texto_result" not in st.session_state:
+    st.session_state["texto_result"] = None
+if "texto_text" not in st.session_state:
+    st.session_state["texto_text"] = ""
+if "texto_phone" not in st.session_state:
+    st.session_state["texto_phone"] = ""
+
+# Estado separado para tab Imagem
+if "imagem_done" not in st.session_state:
+    st.session_state["imagem_done"] = False
+if "imagem_result" not in st.session_state:
+    st.session_state["imagem_result"] = None
+if "imagem_text" not in st.session_state:
+    st.session_state["imagem_text"] = ""
+if "imagem_phone" not in st.session_state:
+    st.session_state["imagem_phone"] = ""
 
 # ============================================================
 # SIDEBAR — Aviso API + Acesso Admin (renderizado UMA vez)
@@ -450,52 +462,52 @@ with _tab_texto:
     st.title("🔍 Analisar Mensagem")
     st.markdown("Analisa mensagens para identificar golpes digitais, links suspeitos, promoções de apostas e fake news.")
 
-    # Se já há resultado guardado, mostra-o com botão de nova análise
-    if st.session_state["analysis_done"] and st.session_state["last_result"] is not None:
-        if st.button("🔄 Nova Análise", type="primary", key="new_analysis_texto"):
-            st.session_state["analysis_done"] = False
-            st.session_state["last_result"] = None
-            st.session_state["last_text"] = ""
-            st.session_state["last_phone"] = ""
-            st.session_state["detected_phone"] = ""
-            st.session_state["ocr_text"] = ""
-            st.rerun()
+    # Formulário — sempre visível no topo
+    text = st.text_area(
+        "Cole aqui a mensagem suspeita...",
+        placeholder="Ex: URGENTE! Clique agora no link bit.ly/xxxxx e confirme os seus dados!",
+        height=150,
+        key="msg_input",
+    )
+    phone_number_texto = st.text_input(
+        "📱 Número que enviou a mensagem (opcional)",
+        placeholder="Ex: +258 84 123 4567",
+        key="phone_input_texto",
+    )
 
+    col_btn, col_clear = st.columns([1, 5])
+    with col_btn:
+        analisar_texto = st.button("🔍 Analisar", type="primary", key="analisar_texto")
+    with col_clear:
+        if st.session_state["texto_done"]:
+            if st.button("🗑️ Limpar", key="limpar_texto"):
+                st.session_state["texto_done"] = False
+                st.session_state["texto_result"] = None
+                st.session_state["texto_text"] = ""
+                st.session_state["texto_phone"] = ""
+
+    if analisar_texto:
+        if text.strip():
+            with st.spinner("A analisar..."):
+                result = analyze_message(
+                    text,
+                    phone_number=phone_number_texto.strip() or None,
+                )
+            st.session_state["texto_done"] = True
+            st.session_state["texto_result"] = result
+            st.session_state["texto_text"] = text
+            st.session_state["texto_phone"] = phone_number_texto
+        else:
+            st.warning("Por favor, insira uma mensagem.")
+
+    # Resultados aparecem logo abaixo, no mesmo tab, sem rerun
+    if st.session_state["texto_done"] and st.session_state["texto_result"] is not None:
         st.divider()
         _show_results(
-            st.session_state["last_result"],
-            st.session_state["last_text"],
-            st.session_state["last_phone"],
+            st.session_state["texto_result"],
+            st.session_state["texto_text"],
+            st.session_state["texto_phone"],
         )
-
-    else:
-        text = st.text_area(
-            "Cole aqui a mensagem suspeita...",
-            placeholder="Ex: URGENTE! Clique agora no link bit.ly/xxxxx e confirme os seus dados!",
-            height=180,
-            key="msg_input",
-        )
-
-        phone_number_texto = st.text_input(
-            "📱 Número que enviou a mensagem (opcional)",
-            placeholder="Ex: +258 84 123 4567",
-            key="phone_input_texto",
-        )
-
-        if st.button("🔍 Analisar", type="primary", key="analisar_texto"):
-            if text.strip():
-                with st.spinner("A analisar..."):
-                    result = analyze_message(
-                        text,
-                        phone_number=phone_number_texto.strip() or None,
-                    )
-                st.session_state["analysis_done"] = True
-                st.session_state["last_result"] = result
-                st.session_state["last_text"] = text
-                st.session_state["last_phone"] = phone_number_texto
-                st.rerun()
-            else:
-                st.warning("Por favor, insira uma mensagem.")
 
 
 # ============================================================
@@ -973,11 +985,24 @@ with _tab_imagem:
         key="phone_input_imagem",
     )
 
-    if st.button("🔍 Analisar Imagem", type="primary", key="analisar_imagem"):
+    col_btn_img, col_clear_img = st.columns([1, 5])
+    with col_btn_img:
+        analisar_imagem = st.button("🔍 Analisar Imagem", type="primary", key="analisar_imagem")
+    with col_clear_img:
+        if st.session_state["imagem_done"]:
+            if st.button("🗑️ Limpar", key="limpar_imagem"):
+                st.session_state["imagem_done"] = False
+                st.session_state["imagem_result"] = None
+                st.session_state["imagem_text"] = ""
+                st.session_state["imagem_phone"] = ""
+                st.session_state["detected_phone"] = ""
+                st.session_state["ocr_text"] = ""
+                st.session_state["phone_input_imagem"] = ""
+
+    if analisar_imagem:
         ocr_text = st.session_state.get("ocr_text", "")
         final_text = text_from_image if text_from_image else ocr_text
 
-        # Se texto ainda insuficiente, passa a imagem directamente ao analyzer
         _img_b64_for_analysis = None
         _img_mime_for_analysis = "image/jpeg"
         if len(final_text.strip().split()) < 5 and uploaded:
@@ -998,30 +1023,20 @@ with _tab_imagem:
                     image_b64=_img_b64_for_analysis,
                     image_mime=_img_mime_for_analysis,
                 )
-            st.session_state["analysis_done"] = True
-            st.session_state["last_result"] = result
-            st.session_state["last_text"] = final_text
-            st.session_state["last_phone"] = phone_number_imagem
-            st.rerun()
+            st.session_state["imagem_done"] = True
+            st.session_state["imagem_result"] = result
+            st.session_state["imagem_text"] = final_text
+            st.session_state["imagem_phone"] = phone_number_imagem
         else:
             st.warning("Por favor, carrega uma imagem ou cola o texto manualmente.")
 
-    # Se já há resultado de uma análise de imagem, mostra-o
-    if st.session_state["analysis_done"] and st.session_state["last_result"] is not None and not uploaded:
-        if st.button("🔄 Nova Análise", type="primary", key="new_analysis_imagem"):
-            st.session_state["analysis_done"] = False
-            st.session_state["last_result"] = None
-            st.session_state["last_text"] = ""
-            st.session_state["last_phone"] = ""
-            st.session_state["detected_phone"] = ""
-            st.session_state["ocr_text"] = ""
-            st.rerun()
-
+    # Resultados aparecem logo abaixo, no mesmo tab, sem rerun
+    if st.session_state["imagem_done"] and st.session_state["imagem_result"] is not None:
         st.divider()
         _show_results(
-            st.session_state["last_result"],
-            st.session_state["last_text"],
-            st.session_state["last_phone"],
+            st.session_state["imagem_result"],
+            st.session_state["imagem_text"],
+            st.session_state["imagem_phone"],
         )
 
 
