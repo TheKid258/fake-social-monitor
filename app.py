@@ -133,7 +133,7 @@ if _is_ml_page:
         _df_lbl = pd.DataFrame(list(_lc.items()), columns=["Tipo", "Quantidade"])
         _fig_lbl = px.bar(_df_lbl, x="Tipo", y="Quantidade", color="Tipo",
                           color_discrete_sequence=px.colors.qualitative.Bold)
-        st.plotly_chart(_fig_lbl, use_container_width=True)
+        st.plotly_chart(_fig_lbl, width="stretch")
 
     st.divider()
 
@@ -1042,7 +1042,7 @@ with _tab_pesquisa:
     if top:
         df_top = pd.DataFrame(top)
         df_top.columns = ["Número", "Tipo de Fraude", "Nível de Risco", "Reports", "Último Report"]
-        st.dataframe(df_top, use_container_width=True)
+        st.dataframe(df_top, width="stretch")
     else:
         st.info("Ainda não há números registados.")
 
@@ -1155,7 +1155,7 @@ with _tab_dashboard:
                 color_discrete_map={"Alto": "#e74c3c", "Médio": "#f39c12", "Baixo": "#3498db", "Nenhum": "#2ecc71"},
                 labels={"dia": "Data", "count": "Nº de Análises", "risk_level": "Nível"},
             )
-            st.plotly_chart(fig_time, use_container_width=True)
+            st.plotly_chart(fig_time, width="stretch")
 
         col_g1, col_g2 = st.columns(2)
 
@@ -1166,7 +1166,7 @@ with _tab_dashboard:
                 color_discrete_sequence=px.colors.qualitative.Bold,
                 category_orders={"risk_level": ["Nenhum", "Baixo", "Médio", "Alto"]},
             )
-            st.plotly_chart(fig1, use_container_width=True)
+            st.plotly_chart(fig1, width="stretch")
 
         with col_g2:
             st.subheader("📊 Distribuição por Tipo de Risco")
@@ -1174,13 +1174,13 @@ with _tab_dashboard:
                 df_filtered, x="risk_type", color="risk_type", text_auto=True,
                 color_discrete_sequence=px.colors.qualitative.Prism,
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width="stretch")
 
         st.subheader("📌 Mensagens Registadas")
         df_sorted = df_filtered.sort_values("date", ascending=False)
         st.dataframe(
             df_sorted[["date", "message", "risk_level", "risk_type", "score", "reasons", "phone_number"]],
-            use_container_width=True,
+            width="stretch",
         )
 
         csv = df_sorted.to_csv(index=False).encode("utf-8")
