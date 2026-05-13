@@ -724,9 +724,25 @@ with _tab_imagem:
                     if pm:
                         extracted_phone_from_image = pm.group(1).strip()
 
-                # ── FASE 3: Recorte da bolha de mensagem ────
+                # ── FASE 3: Detectar dark/light mode ────────
+                # Calcula brilho médio da zona central da imagem
+                # para decidir se é dark mode (fundo escuro) ou
+                # light mode (fundo claro).
+                _center_arr = arr_phone[int(ph*0.3):int(ph*0.8), :, :]
+                _bg_brightness = np.mean(_center_arr)
+                _is_dark_mode = _bg_brightness < 100
+
+                # ── FASE 3b: Recorte da bolha de mensagem ───
+                # Dark mode: bolha recebida tem brilho ~30-80 (cinzento escuro)
+                # Light mode: bolha recebida tem brilho ~200-240 (branco/cinzento claro)
                 row_means = np.mean(arr_phone, axis=(1, 2))
-                in_bubble = (row_means >= 35) & (row_means <= 130)
+                if _is_dark_mode:
+                    # Bolha recebida no dark mode: cinzento escuro ~20-90
+                    in_bubble = (row_means >= 18) & (row_means <= 95)
+                else:
+                    # Bolha recebida no light mode: claro ~180-245
+                    in_bubble = (row_means >= 170) & (row_means <= 248)
+
                 changes = np.diff(in_bubble.astype(int))
                 starts = list(np.where(changes == 1)[0] + 1)
                 ends   = list(np.where(changes == -1)[0] + 1)
@@ -738,25 +754,34 @@ with _tab_imagem:
                     if e - s > best_end - best_start:
                         best_start, best_end = s, e
 
-                if best_end > best_start + 30:
-                    margin = 40
-                    bubble_crop = phone_img.crop((
-                        0, max(0, best_start - margin),
-                        int(pw * 0.62), min(ph, best_end + margin)
-                    ))
-                else:
-                    bubble_crop = phone_img.crop((
-                        0, int(ph * 0.25),
-                        int(pw * 0.62), int(ph * 0.88)
-                    ))
+                # Se não encontrou bolha, usa zona central alargada
+                if best_end <= best_start + 30:
+                    best_start = int(ph * 0.22)
+                    best_end   = int(ph * 0.90)
 
-                # ── FASE 4: Pré-processamento da bolha ──────
+                margin = 50
+                # Largura: 85% para apanhar bolhas largas
+                bubble_crop = phone_img.crop((
+                    0, max(0, best_start - margin),
+                    int(pw * 0.85), min(ph, best_end + margin)
+                ))
+
+                # ── FASE 4: Pré-processamento adaptativo ────
                 arr_b = np.array(bubble_crop.convert("RGB"))
                 bubble_brightness = arr_b.mean()
                 msg_gray = bubble_crop.convert("L")
-                contrast_factor = 2.0 if bubble_brightness > 150 else 2.5
-                msg_gray = ImageEnhance.Contrast(msg_gray).enhance(contrast_factor)
-                msg_gray = ImageEnhance.Sharpness(msg_gray).enhance(2.0)
+
+                if _is_dark_mode:
+                    # Dark mode: inverter para texto preto em fundo branco
+                    # (Tesseract lê muito melhor texto escuro em fundo claro)
+                    msg_gray = Image.fromarray(255 - np.array(msg_gray))
+                    msg_gray = ImageEnhance.Contrast(msg_gray).enhance(3.0)
+                    msg_gray = ImageEnhance.Brightness(msg_gray).enhance(1.3)
+                else:
+                    # Light mode: aumentar contraste normalmente
+                    msg_gray = ImageEnhance.Contrast(msg_gray).enhance(2.5)
+
+                msg_gray = ImageEnhance.Sharpness(msg_gray).enhance(2.5)
                 mw, mh = msg_gray.size
                 msg_gray_3x = msg_gray.resize((mw * 3, mh * 3), Image.LANCZOS)
 
@@ -881,6 +906,8 @@ with _tab_imagem:
                 # ── Expander de diagnóstico (sempre visível) ─
                 with st.expander("🔬 Diagnóstico OCR — detalhes do PSM"):
                     st.markdown(
+                        f"**Modo detectado:** {'🌙 Dark mode' if _is_dark_mode else '☀️ Light mode'} "
+                        f"(brilho médio: `{_bg_brightness:.0f}`)  \n"
                         f"**OSD →** rotação `{_rotate_deg}°` | "
                         f"PSM 3 adequado: `{'Sim' if _osd_psm3_ok else 'Não'}`  \n"
                         f"**Layout →** `{_n_blobs}` blob(s) detectado(s) | "
@@ -930,12 +957,17 @@ with _tab_imagem:
         except Exception as e:
             st.warning(f"⚠️ Erro ao processar imagem: {e}. Cola o texto manualmente.")
 
-    # Campo de número e botão Analisar — dentro do tab de imagem
-    # Pré-preenche com número detectado via OCR se disponível
-    _default_phone_img = st.session_state.get("detected_phone", "")
+    # ── Campo número: preenche automaticamente via session_state ──
+    # Quando o Streamlit já tem a key no session_state, o parâmetro
+    # value= é ignorado. A solução correcta é escrever directamente
+    # no session_state ANTES de criar o widget, mas só se o campo
+    # ainda estiver vazio (para não sobrescrever edições do utilizador).
+    _detected = st.session_state.get("detected_phone", "")
+    if _detected and not st.session_state.get("phone_input_imagem", ""):
+        st.session_state["phone_input_imagem"] = _detected
+
     phone_number_imagem = st.text_input(
         "📱 Número que enviou a mensagem (opcional)",
-        value=_default_phone_img,
         placeholder="Ex: +258 84 123 4567",
         help="Preenchido automaticamente se detectado na imagem.",
         key="phone_input_imagem",
