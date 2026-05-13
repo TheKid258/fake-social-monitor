@@ -631,13 +631,51 @@ with _tab_imagem:
                     except Exception as _vision_err:
                         logger.error(f"Claude Vision erro: {_vision_err}")
 
-            # ------------------------------------------------
-            # MÉTODO 3: Tesseract melhorado (fallback)
-            # ------------------------------------------------
+            # ================================================
+            # MÉTODO 3: Tesseract com PSM inteligente
+            # Pipeline:
+            #   PSM 0 (OSD) → detecta orientação e confiança
+            #   OpenCV      → conta contornos e decide layout
+            #   PSM escolhido → 6 (bloco único), 3 (auto),
+            #                   ou 11 (texto disperso)
+            # ================================================
             if not text_from_image:
+                import cv2
+
+                # ── Utilitário: limpar linhas de ruído ──────
+                _skip_pats = [
+                    r"^\d{1,2}:\d{2}\s*(AM|PM)?$",
+                    r"^(sunday|monday|tuesday|wednesday|thursday|friday|saturday"
+                    r"|domingo|segunda|terça|quarta|quinta|sexta|sábado)",
+                    r"^(january|february|march|april|may|june|july|august"
+                    r"|september|october|november|december|janeiro|fevereiro"
+                    r"|março|abril|maio|junho|julho|agosto|setembro|outubro"
+                    r"|novembro|dezembro)",
+                    r"^this message is from",
+                    r"^beware of smishing",
+                    r"^block number",
+                    r"^\+?[\d\s\-]{9,}$",
+                    r"^[^\w]*$",
+                    r"^.{1,3}$",
+                ]
+
+                def _clean_ocr(raw: str) -> str:
+                    out = []
+                    for line in raw.splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if not any(_re.search(p, line, _re.IGNORECASE) for p in _skip_pats):
+                            out.append(line)
+                    return "\n".join(out).strip()
+
+                # ── Utilitário: conta palavras úteis ────────
+                def _word_count(text: str) -> int:
+                    return len([w for w in text.split() if len(w) > 2])
+
+                # ── FASE 1: Recorte da zona do telefone ─────
                 w_img, h_img = image.size
                 arr_rgb = np.array(image.convert("RGB"))
-
                 border_brightness = np.mean(arr_rgb[:50, :, :])
                 is_browser_capture = border_brightness > 150
 
@@ -651,7 +689,7 @@ with _tab_imagem:
                     for s, e in zip(sc, ec):
                         if e - s > best_x2 - best_x1:
                             best_x1, best_x2 = s, e
-                    zone = arr_rgb[:, max(0,best_x1):min(w_img,best_x2), :]
+                    zone = arr_rgb[:, max(0, best_x1):min(w_img, best_x2), :]
                     row_z = np.mean(zone, axis=(1, 2))
                     dark_row_mask = row_z < 150
                     cr = np.diff(dark_row_mask.astype(int))
@@ -671,25 +709,29 @@ with _tab_imagem:
                 pw, ph = phone_img.size
                 arr_phone = np.array(phone_img.convert("RGB"))
 
+                # ── FASE 2: Extrair número do cabeçalho ─────
                 header = phone_img.crop((0, 0, pw, int(ph * 0.20)))
                 header_arr = 255 - np.array(header.convert("RGB"))
                 header_img = Image.fromarray(header_arr.astype(np.uint8)).convert("L")
                 header_img = ImageEnhance.Contrast(header_img).enhance(3.0)
                 hw, hh = header_img.size
-                header_img = header_img.resize((hw*3, hh*3), Image.LANCZOS)
-                header_text = pytesseract.image_to_string(header_img, lang="por+eng", config="--oem 3 --psm 6")
+                header_img = header_img.resize((hw * 3, hh * 3), Image.LANCZOS)
+                header_text = pytesseract.image_to_string(
+                    header_img, lang="por+eng", config="--oem 3 --psm 6"
+                )
                 if not extracted_phone_from_image:
                     pm = _re.search(r"(\+?\d[\d\s]{7,14}\d)", header_text)
                     if pm:
                         extracted_phone_from_image = pm.group(1).strip()
 
+                # ── FASE 3: Recorte da bolha de mensagem ────
                 row_means = np.mean(arr_phone, axis=(1, 2))
                 in_bubble = (row_means >= 35) & (row_means <= 130)
                 changes = np.diff(in_bubble.astype(int))
                 starts = list(np.where(changes == 1)[0] + 1)
-                ends = list(np.where(changes == -1)[0] + 1)
-                if len(starts) == 0 and in_bubble[0]: starts = [0]
-                if len(ends) == 0 and in_bubble[-1]: ends = [ph]
+                ends   = list(np.where(changes == -1)[0] + 1)
+                if len(starts) == 0 and in_bubble[0]:  starts = [0]
+                if len(ends)   == 0 and in_bubble[-1]: ends   = [ph]
 
                 best_start, best_end = 0, 0
                 for s, e in zip(starts, ends):
@@ -704,44 +746,152 @@ with _tab_imagem:
                     ))
                 else:
                     bubble_crop = phone_img.crop((
-                        0, int(ph*0.25),
-                        int(pw*0.62), int(ph*0.88)
+                        0, int(ph * 0.25),
+                        int(pw * 0.62), int(ph * 0.88)
                     ))
 
+                # ── FASE 4: Pré-processamento da bolha ──────
                 arr_b = np.array(bubble_crop.convert("RGB"))
                 bubble_brightness = arr_b.mean()
-
                 msg_gray = bubble_crop.convert("L")
-                if bubble_brightness > 150:
-                    msg_gray = ImageEnhance.Contrast(msg_gray).enhance(2.0)
-                else:
-                    msg_gray = ImageEnhance.Contrast(msg_gray).enhance(2.5)
-
+                contrast_factor = 2.0 if bubble_brightness > 150 else 2.5
+                msg_gray = ImageEnhance.Contrast(msg_gray).enhance(contrast_factor)
                 msg_gray = ImageEnhance.Sharpness(msg_gray).enhance(2.0)
                 mw, mh = msg_gray.size
-                msg_gray = msg_gray.resize((mw*3, mh*3), Image.LANCZOS)
+                msg_gray_3x = msg_gray.resize((mw * 3, mh * 3), Image.LANCZOS)
 
-                raw_text = pytesseract.image_to_string(msg_gray, lang="por+eng", config="--oem 3 --psm 6")
+                # ── FASE 5: PSM 0 — detecção de orientação ──
+                # Tesseract PSM 0 devolve metadados OSD.
+                # Se a confiança for baixa (<= 2.0) ou a rotação
+                # for diferente de 0°, ignoramos PSM 3 (sensível
+                # a layout) e favorecemos PSM 11 (robusto).
+                _osd_psm3_ok = True   # assume orientação boa
+                _rotate_deg  = 0
+                try:
+                    _osd_raw = pytesseract.image_to_osd(
+                        msg_gray_3x,
+                        config="--psm 0 -c min_characters_to_try=5",
+                        output_type=pytesseract.Output.DICT,
+                    )
+                    _rotate_deg       = int(_osd_raw.get("rotate", 0))
+                    _orient_conf      = float(_osd_raw.get("orientation_conf", 0))
+                    _script_conf      = float(_osd_raw.get("script_conf", 0))
+                    # Confiança fraca OU imagem rodada → PSM 3 não é seguro
+                    if _orient_conf <= 2.0 or _rotate_deg != 0:
+                        _osd_psm3_ok = False
+                    logger.info(
+                        f"OSD → rotate={_rotate_deg}° orient_conf={_orient_conf:.1f} "
+                        f"script_conf={_script_conf:.1f} psm3_ok={_osd_psm3_ok}"
+                    )
+                except Exception as _osd_err:
+                    logger.warning(f"OSD falhou (imagem pequena?): {_osd_err}")
+                    _osd_psm3_ok = False   # sem OSD → conservador
 
-                skip_pats = [
-                    r"^\d{1,2}:\d{2}\s*(AM|PM)?$",
-                    r"^(sunday|monday|tuesday|wednesday|thursday|friday|saturday|domingo|segunda|terça|quarta|quinta|sexta|sábado)",
-                    r"^(january|february|march|april|may|june|july|august|september|october|november|december|janeiro|fevereiro|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)",
-                    r"^this message is from",
-                    r"^beware of smishing",
-                    r"^block number",
-                    r"^\+?[\d\s\-]{9,}$",
-                    r"^[^\w]*$",
-                    r"^.{1,3}$",
-                ]
-                clean = []
-                for line in raw_text.splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    if not any(_re.search(p, line, _re.IGNORECASE) for p in skip_pats):
-                        clean.append(line)
-                text_from_image = "\n".join(clean).strip()
+                # ── FASE 6: OpenCV — análise de contornos ───
+                # Conta blobs de texto para escolher PSM:
+                #   blob único grande   → PSM 6
+                #   blobs dispersos     → PSM 11
+                #   múltiplos clusters  → PSM 3 (se orientação ok)
+                _cv_arr  = np.array(msg_gray_3x)
+                _, _thr  = cv2.threshold(_cv_arr, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                _kernel  = cv2.getStructuringElement(cv2.MORPH_RECT, (20, 5))
+                _dilated = cv2.dilate(_thr, _kernel, iterations=3)
+                _cnts, _ = cv2.findContours(_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+                # Filtrar contornos minúsculos (ruído)
+                _img_area   = _cv_arr.shape[0] * _cv_arr.shape[1]
+                _min_area   = _img_area * 0.002          # < 0.2 % → ruído
+                _big_cnts   = [c for c in _cnts if cv2.contourArea(c) > _min_area]
+                _n_blobs    = len(_big_cnts)
+
+                # Calcular dispersão espacial dos centros dos blobs
+                _blob_decision = "psm6"   # default seguro
+                if _n_blobs == 0:
+                    _blob_decision = "psm11"   # nada detectado → tentativa ampla
+                elif _n_blobs == 1:
+                    _blob_decision = "psm6"    # um bloco único e compacto
+                else:
+                    # Calcular bbox de cada blob e ver dispersão vertical
+                    _centers_y = []
+                    for c in _big_cnts:
+                        x, y, bw, bh = cv2.boundingRect(c)
+                        _centers_y.append(y + bh / 2)
+                    _spread_y   = max(_centers_y) - min(_centers_y)
+                    _rel_spread = _spread_y / max(_cv_arr.shape[0], 1)
+
+                    if _rel_spread > 0.5:
+                        # Blobs muito dispersos verticalmente → PSM 11
+                        _blob_decision = "psm11"
+                    elif _n_blobs >= 3:
+                        # Vários clusters → PSM 3 se orientação ok, senão PSM 11
+                        _blob_decision = "psm3" if _osd_psm3_ok else "psm11"
+                    else:
+                        _blob_decision = "psm6"   # 2 blobs próximos → bloco único
+
+                # Mapeamento para configuração Tesseract
+                _PSM_MAP = {
+                    "psm3":  "--oem 3 --psm 3",
+                    "psm6":  "--oem 3 --psm 6",
+                    "psm11": "--oem 3 --psm 11",
+                }
+                _chosen_config = _PSM_MAP[_blob_decision]
+
+                # ── FASE 7: OCR com PSM escolhido ───────────
+                # Corre primeiro com o PSM óptimo detectado.
+                # Se o resultado for fraco (< 4 palavras úteis),
+                # tenta os outros dois por ordem de fallback.
+                _psm_order = [_blob_decision]
+                for _p in ["psm6", "psm3", "psm11"]:
+                    if _p != _blob_decision:
+                        if _p == "psm3" and not _osd_psm3_ok:
+                            continue   # nunca usar PSM 3 com má orientação
+                        _psm_order.append(_p)
+
+                _ocr_debug = []   # para exibir no expander de debug
+                raw_text   = ""
+                text_from_image = ""
+
+                for _psm_key in _psm_order:
+                    _cfg  = _PSM_MAP[_psm_key]
+                    _raw  = pytesseract.image_to_string(
+                        msg_gray_3x, lang="por+eng", config=_cfg
+                    )
+                    _cleaned = _clean_ocr(_raw)
+                    _wc      = _word_count(_cleaned)
+                    _ocr_debug.append({
+                        "psm": _psm_key.upper(),
+                        "palavras": _wc,
+                        "texto": _cleaned[:120] + ("…" if len(_cleaned) > 120 else ""),
+                    })
+                    logger.info(f"Tesseract {_psm_key.upper()} → {_wc} palavras")
+
+                    if _wc >= 4 and not text_from_image:
+                        text_from_image = _cleaned   # primeiro resultado válido
+
+                # Se nenhum PSM deu ≥ 4 palavras, usa o melhor disponível
+                if not text_from_image:
+                    _best = max(_ocr_debug, key=lambda d: d["palavras"])
+                    # Reler o resultado completo (não truncado) do PSM vencedor
+                    _psm_key_best = _best["psm"].lower()
+                    _raw_best = pytesseract.image_to_string(
+                        msg_gray_3x, lang="por+eng", config=_PSM_MAP[_psm_key_best]
+                    )
+                    text_from_image = _clean_ocr(_raw_best)
+
+                # ── Expander de diagnóstico (sempre visível) ─
+                with st.expander("🔬 Diagnóstico OCR — detalhes do PSM"):
+                    st.markdown(
+                        f"**OSD →** rotação `{_rotate_deg}°` | "
+                        f"PSM 3 adequado: `{'Sim' if _osd_psm3_ok else 'Não'}`  \n"
+                        f"**Layout →** `{_n_blobs}` blob(s) detectado(s) | "
+                        f"decisão inicial: **{_blob_decision.upper()}**"
+                    )
+                    for _d in _ocr_debug:
+                        _icon = "✅" if _d["palavras"] >= 4 else "⚠️"
+                        st.markdown(
+                            f"{_icon} **{_d['psm']}** — {_d['palavras']} palavra(s)  \n"
+                            f"`{_d['texto'] or '(sem resultado)'}`"
+                        )
 
             # ------------------------------------------------
             # Mostrar resultados do OCR
