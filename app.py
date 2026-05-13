@@ -73,6 +73,11 @@ if "imagem_text" not in st.session_state:
 if "imagem_phone" not in st.session_state:
     st.session_state["imagem_phone"] = ""
 
+# FIX: key de valor separada para o campo de número da tab Imagem
+# Nunca modificar a key do widget directamente — usar esta como fonte de verdade
+if "phone_imagem_value" not in st.session_state:
+    st.session_state["phone_imagem_value"] = ""
+
 # ============================================================
 # SIDEBAR — Aviso API + Acesso Admin (renderizado UMA vez)
 # ============================================================
@@ -737,22 +742,15 @@ with _tab_imagem:
                         extracted_phone_from_image = pm.group(1).strip()
 
                 # ── FASE 3: Detectar dark/light mode ────────
-                # Calcula brilho médio da zona central da imagem
-                # para decidir se é dark mode (fundo escuro) ou
-                # light mode (fundo claro).
                 _center_arr = arr_phone[int(ph*0.3):int(ph*0.8), :, :]
                 _bg_brightness = np.mean(_center_arr)
                 _is_dark_mode = _bg_brightness < 100
 
                 # ── FASE 3b: Recorte da bolha de mensagem ───
-                # Dark mode: bolha recebida tem brilho ~30-80 (cinzento escuro)
-                # Light mode: bolha recebida tem brilho ~200-240 (branco/cinzento claro)
                 row_means = np.mean(arr_phone, axis=(1, 2))
                 if _is_dark_mode:
-                    # Bolha recebida no dark mode: cinzento escuro ~20-90
                     in_bubble = (row_means >= 18) & (row_means <= 95)
                 else:
-                    # Bolha recebida no light mode: claro ~180-245
                     in_bubble = (row_means >= 170) & (row_means <= 248)
 
                 changes = np.diff(in_bubble.astype(int))
@@ -766,13 +764,11 @@ with _tab_imagem:
                     if e - s > best_end - best_start:
                         best_start, best_end = s, e
 
-                # Se não encontrou bolha, usa zona central alargada
                 if best_end <= best_start + 30:
                     best_start = int(ph * 0.22)
                     best_end   = int(ph * 0.90)
 
                 margin = 50
-                # Largura: 85% para apanhar bolhas largas
                 bubble_crop = phone_img.crop((
                     0, max(0, best_start - margin),
                     int(pw * 0.85), min(ph, best_end + margin)
@@ -784,13 +780,10 @@ with _tab_imagem:
                 msg_gray = bubble_crop.convert("L")
 
                 if _is_dark_mode:
-                    # Dark mode: inverter para texto preto em fundo branco
-                    # (Tesseract lê muito melhor texto escuro em fundo claro)
                     msg_gray = Image.fromarray(255 - np.array(msg_gray))
                     msg_gray = ImageEnhance.Contrast(msg_gray).enhance(3.0)
                     msg_gray = ImageEnhance.Brightness(msg_gray).enhance(1.3)
                 else:
-                    # Light mode: aumentar contraste normalmente
                     msg_gray = ImageEnhance.Contrast(msg_gray).enhance(2.5)
 
                 msg_gray = ImageEnhance.Sharpness(msg_gray).enhance(2.5)
@@ -798,11 +791,7 @@ with _tab_imagem:
                 msg_gray_3x = msg_gray.resize((mw * 3, mh * 3), Image.LANCZOS)
 
                 # ── FASE 5: PSM 0 — detecção de orientação ──
-                # Tesseract PSM 0 devolve metadados OSD.
-                # Se a confiança for baixa (<= 2.0) ou a rotação
-                # for diferente de 0°, ignoramos PSM 3 (sensível
-                # a layout) e favorecemos PSM 11 (robusto).
-                _osd_psm3_ok = True   # assume orientação boa
+                _osd_psm3_ok = True
                 _rotate_deg  = 0
                 try:
                     _osd_raw = pytesseract.image_to_osd(
@@ -810,10 +799,9 @@ with _tab_imagem:
                         config="--psm 0 -c min_characters_to_try=5",
                         output_type=pytesseract.Output.DICT,
                     )
-                    _rotate_deg       = int(_osd_raw.get("rotate", 0))
-                    _orient_conf      = float(_osd_raw.get("orientation_conf", 0))
-                    _script_conf      = float(_osd_raw.get("script_conf", 0))
-                    # Confiança fraca OU imagem rodada → PSM 3 não é seguro
+                    _rotate_deg  = int(_osd_raw.get("rotate", 0))
+                    _orient_conf = float(_osd_raw.get("orientation_conf", 0))
+                    _script_conf = float(_osd_raw.get("script_conf", 0))
                     if _orient_conf <= 2.0 or _rotate_deg != 0:
                         _osd_psm3_ok = False
                     logger.info(
@@ -822,33 +810,26 @@ with _tab_imagem:
                     )
                 except Exception as _osd_err:
                     logger.warning(f"OSD falhou (imagem pequena?): {_osd_err}")
-                    _osd_psm3_ok = False   # sem OSD → conservador
+                    _osd_psm3_ok = False
 
                 # ── FASE 6: OpenCV — análise de contornos ───
-                # Conta blobs de texto para escolher PSM:
-                #   blob único grande   → PSM 6
-                #   blobs dispersos     → PSM 11
-                #   múltiplos clusters  → PSM 3 (se orientação ok)
                 _cv_arr  = np.array(msg_gray_3x)
                 _, _thr  = cv2.threshold(_cv_arr, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
                 _kernel  = cv2.getStructuringElement(cv2.MORPH_RECT, (20, 5))
                 _dilated = cv2.dilate(_thr, _kernel, iterations=3)
                 _cnts, _ = cv2.findContours(_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-                # Filtrar contornos minúsculos (ruído)
                 _img_area   = _cv_arr.shape[0] * _cv_arr.shape[1]
-                _min_area   = _img_area * 0.002          # < 0.2 % → ruído
+                _min_area   = _img_area * 0.002
                 _big_cnts   = [c for c in _cnts if cv2.contourArea(c) > _min_area]
                 _n_blobs    = len(_big_cnts)
 
-                # Calcular dispersão espacial dos centros dos blobs
-                _blob_decision = "psm6"   # default seguro
+                _blob_decision = "psm6"
                 if _n_blobs == 0:
-                    _blob_decision = "psm11"   # nada detectado → tentativa ampla
+                    _blob_decision = "psm11"
                 elif _n_blobs == 1:
-                    _blob_decision = "psm6"    # um bloco único e compacto
+                    _blob_decision = "psm6"
                 else:
-                    # Calcular bbox de cada blob e ver dispersão vertical
                     _centers_y = []
                     for c in _big_cnts:
                         x, y, bw, bh = cv2.boundingRect(c)
@@ -857,34 +838,27 @@ with _tab_imagem:
                     _rel_spread = _spread_y / max(_cv_arr.shape[0], 1)
 
                     if _rel_spread > 0.5:
-                        # Blobs muito dispersos verticalmente → PSM 11
                         _blob_decision = "psm11"
                     elif _n_blobs >= 3:
-                        # Vários clusters → PSM 3 se orientação ok, senão PSM 11
                         _blob_decision = "psm3" if _osd_psm3_ok else "psm11"
                     else:
-                        _blob_decision = "psm6"   # 2 blobs próximos → bloco único
+                        _blob_decision = "psm6"
 
-                # Mapeamento para configuração Tesseract
                 _PSM_MAP = {
                     "psm3":  "--oem 3 --psm 3",
                     "psm6":  "--oem 3 --psm 6",
                     "psm11": "--oem 3 --psm 11",
                 }
-                _chosen_config = _PSM_MAP[_blob_decision]
 
                 # ── FASE 7: OCR com PSM escolhido ───────────
-                # Corre primeiro com o PSM óptimo detectado.
-                # Se o resultado for fraco (< 4 palavras úteis),
-                # tenta os outros dois por ordem de fallback.
                 _psm_order = [_blob_decision]
                 for _p in ["psm6", "psm3", "psm11"]:
                     if _p != _blob_decision:
                         if _p == "psm3" and not _osd_psm3_ok:
-                            continue   # nunca usar PSM 3 com má orientação
+                            continue
                         _psm_order.append(_p)
 
-                _ocr_debug = []   # para exibir no expander de debug
+                _ocr_debug = []
                 raw_text   = ""
                 text_from_image = ""
 
@@ -903,19 +877,16 @@ with _tab_imagem:
                     logger.info(f"Tesseract {_psm_key.upper()} → {_wc} palavras")
 
                     if _wc >= 4 and not text_from_image:
-                        text_from_image = _cleaned   # primeiro resultado válido
+                        text_from_image = _cleaned
 
-                # Se nenhum PSM deu ≥ 4 palavras, usa o melhor disponível
                 if not text_from_image:
                     _best = max(_ocr_debug, key=lambda d: d["palavras"])
-                    # Reler o resultado completo (não truncado) do PSM vencedor
                     _psm_key_best = _best["psm"].lower()
                     _raw_best = pytesseract.image_to_string(
                         msg_gray_3x, lang="por+eng", config=_PSM_MAP[_psm_key_best]
                     )
                     text_from_image = _clean_ocr(_raw_best)
 
-                # ── Expander de diagnóstico (sempre visível) ─
                 with st.expander("🔬 Diagnóstico OCR — detalhes do PSM"):
                     st.markdown(
                         f"**Modo detectado:** {'🌙 Dark mode' if _is_dark_mode else '☀️ Light mode'} "
@@ -969,21 +940,23 @@ with _tab_imagem:
         except Exception as e:
             st.warning(f"⚠️ Erro ao processar imagem: {e}. Cola o texto manualmente.")
 
-    # ── Campo número: preenche automaticamente via session_state ──
-    # Quando o Streamlit já tem a key no session_state, o parâmetro
-    # value= é ignorado. A solução correcta é escrever directamente
-    # no session_state ANTES de criar o widget, mas só se o campo
-    # ainda estiver vazio (para não sobrescrever edições do utilizador).
+    # ── Campo número: FIX — usar key de valor separada ──────────────
+    # NUNCA escrever em st.session_state["phone_input_imagem_widget"]
+    # directamente — é a key interna do widget e o Streamlit proíbe-o.
+    # Usamos "phone_imagem_value" como fonte de verdade e passamos via value=.
     _detected = st.session_state.get("detected_phone", "")
-    if _detected and not st.session_state.get("phone_input_imagem", ""):
-        st.session_state["phone_input_imagem"] = _detected
+    if _detected and not st.session_state["phone_imagem_value"]:
+        st.session_state["phone_imagem_value"] = _detected
 
     phone_number_imagem = st.text_input(
         "📱 Número que enviou a mensagem (opcional)",
         placeholder="Ex: +258 84 123 4567",
         help="Preenchido automaticamente se detectado na imagem.",
-        key="phone_input_imagem",
+        value=st.session_state["phone_imagem_value"],
+        key="phone_input_imagem_widget",
     )
+    # Sincronizar o valor editado pelo utilizador de volta ao estado
+    st.session_state["phone_imagem_value"] = phone_number_imagem
 
     col_btn_img, col_clear_img = st.columns([1, 5])
     with col_btn_img:
@@ -997,7 +970,9 @@ with _tab_imagem:
                 st.session_state["imagem_phone"] = ""
                 st.session_state["detected_phone"] = ""
                 st.session_state["ocr_text"] = ""
-                st.session_state["phone_input_imagem"] = ""
+                # FIX: limpar a key de valor, não a key do widget
+                st.session_state["phone_imagem_value"] = ""
+                st.rerun()
 
     if analisar_imagem:
         ocr_text = st.session_state.get("ocr_text", "")
