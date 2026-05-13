@@ -5,6 +5,7 @@ Módulo principal de análise de mensagens suspeitas.
 
 import re
 import os
+import logging
 import requests
 from dotenv import load_dotenv
 from urllib.parse import urlparse, parse_qs
@@ -14,7 +15,28 @@ from database import save_analysis, is_blacklisted
 from text_utils import preprocess
 from ml_model import predict_all
 
+# Novos módulos de análise
+try:
+    from url_expander import expand_url, is_shortener as _is_shortener
+    _HAS_EXPANDER = True
+except ImportError:
+    _HAS_EXPANDER = False
+
+try:
+    from whois_checker import check_domain_age
+    _HAS_WHOIS = True
+except ImportError:
+    _HAS_WHOIS = False
+
+try:
+    from virustotal import check_url as vt_check_url
+    _HAS_VT = True
+except ImportError:
+    _HAS_VT = False
+
 load_dotenv()
+logger = logging.getLogger(__name__)
+
 API_KEY = os.getenv("GOOGLE_SAFE_BROWSING_API_KEY", "")
 
 SHORTENERS = r"(abre\.ai|bit\.ly|tinyurl|t\.co|is\.gd|goo\.gl|ow\.ly|rb\.gy|cutt\.ly|shorturl\.at)"
@@ -289,13 +311,16 @@ def is_whatsapp_phishing(url: str) -> bool:
 
 def check_link_safety(url: str) -> dict:
     """
-    Verificação completa de um link em 4 camadas:
-    1. Análise heurística local (sempre executada)
-    2. Detecção de WhatsApp phishing
-    3. Google Safe Browsing API
-    4. Google Web Risk API (mais actualizado e preciso)
+    Verificação completa de um link em 7 camadas:
+      1. Análise heurística local    (sempre)
+      2. Detecção de WhatsApp phishing
+      3. URL Expander                — expande bit.ly/abre.ai/etc. e re-analisa destino
+      4. WHOIS / Idade do domínio   — domínios com < 30 dias = risco alto
+      5. Google Safe Browsing API
+      6. Google Web Risk API
+      7. VirusTotal                  — 90+ motores antivírus
     """
-    # Camada 1: Heurística local
+    # ── Camada 1: Heurística local ──────────────────────────────────────────────
     heuristic = analyze_url_heuristic(url)
 
     result = {
@@ -308,6 +333,11 @@ def check_link_safety(url: str) -> dict:
         "heuristic_score": heuristic["heuristic_score"],
         "is_trusted": heuristic.get("is_trusted", False),
         "verified_by": [],
+        # Campos novos
+        "expanded_url": None,
+        "expansion_chain": [],
+        "whois": {},
+        "virustotal": {},
     }
 
     if heuristic.get("is_trusted"):
@@ -325,19 +355,67 @@ def check_link_safety(url: str) -> dict:
         result["status"] = "Baixo Risco"
         result["score_bonus"] = 1
 
-    # Camada 2: WhatsApp phishing
+    # ── Camada 2: WhatsApp phishing ─────────────────────────────────────────────
     if is_whatsapp_phishing(url):
         result["whatsapp_phishing"] = True
         result["status"] = "Suspeito — WhatsApp Phishing"
         result["threat_type"] = "WhatsApp Phishing"
         result["score_bonus"] = max(result["score_bonus"], 4)
 
-    # Camada 3: Google Safe Browsing API
+    # ── Camada 3: URL Expander ───────────────────────────────────────────────────
+    # URL que será usado nas camadas seguintes (pode ser o destino expandido)
+    analysis_url = url
+    if _HAS_EXPANDER and _is_shortener(url):
+        try:
+            expansion = expand_url(url)
+            if expansion["expanded"] and expansion["final"] != url:
+                analysis_url = expansion["final"]
+                result["expanded_url"] = analysis_url
+                result["expansion_chain"] = expansion["chain"]
+                result["heuristic_reasons"].append(
+                    f"Link encurtado expandido → {analysis_url[:80]}"
+                )
+                # Re-analisa o destino real heuristicamente
+                h2 = analyze_url_heuristic(analysis_url)
+                if not h2.get("is_trusted") and h2["heuristic_score"] > h_score:
+                    result["heuristic_score"] = h2["heuristic_score"]
+                    result["heuristic_reasons"] += [
+                        f"[URL real] {r}" for r in h2["heuristic_reasons"]
+                    ]
+                    extra = h2["heuristic_score"] - h_score
+                    result["score_bonus"] += min(extra, 4)
+                    if h2["heuristic_score"] >= 8:
+                        result["status"] = "Suspeito — Alto Risco"
+            elif expansion.get("error"):
+                result["heuristic_reasons"].append(
+                    f"Não foi possível expandir o link encurtado: {expansion['error']}"
+                )
+        except Exception as e:
+            logger.warning(f"URL Expander erro: {e}")
+
+    # ── Camada 4: WHOIS / Idade do domínio ──────────────────────────────────────
+    if _HAS_WHOIS:
+        try:
+            whois = check_domain_age(analysis_url)
+            result["whois"] = whois
+            if whois.get("risk_score", 0) > 0:
+                result["score_bonus"] += whois["risk_score"]
+                if whois.get("risk_reason"):
+                    result["heuristic_reasons"].append(f"WHOIS: {whois['risk_reason']}")
+                if whois["risk_score"] >= 5:
+                    result["status"] = "Suspeito — Alto Risco"
+                    result["threat_type"] = result["threat_type"] or "Domínio muito recente"
+                    if "WHOIS / Domínio recente" not in result["verified_by"]:
+                        result["verified_by"].append("WHOIS / Domínio recente")
+        except Exception as e:
+            logger.warning(f"WHOIS erro para {analysis_url}: {e}")
+
+    # ── Camada 5: Google Safe Browsing API ──────────────────────────────────────
     if API_KEY:
         try:
             endpoint = f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={API_KEY}"
             payload = {
-                "client": {"clientId": "phishing_monitor", "clientVersion": "1.2"},
+                "client": {"clientId": "phishing_monitor", "clientVersion": "1.3"},
                 "threatInfo": {
                     "threatTypes": [
                         "MALWARE", "SOCIAL_ENGINEERING",
@@ -345,7 +423,7 @@ def check_link_safety(url: str) -> dict:
                     ],
                     "platformTypes": ["ANY_PLATFORM"],
                     "threatEntryTypes": ["URL"],
-                    "threatEntries": [{"url": url}],
+                    "threatEntries": [{"url": analysis_url}],
                 },
             }
             resp = requests.post(endpoint, json=payload, timeout=5)
@@ -359,12 +437,12 @@ def check_link_safety(url: str) -> dict:
         except Exception as e:
             result["api_error_sb"] = str(e)
 
-    # Camada 4: Google Web Risk API
+    # ── Camada 6: Google Web Risk API ───────────────────────────────────────────
     WEB_RISK_KEY = os.getenv("GOOGLE_WEB_RISK_API_KEY", "")
     if WEB_RISK_KEY and result["status"] != "Perigoso":
         try:
             from urllib.parse import quote
-            encoded_url = quote(url, safe="")
+            encoded_url = quote(analysis_url, safe="")
             endpoint = (
                 f"https://webrisk.googleapis.com/v1/uris:search"
                 f"?key={WEB_RISK_KEY}"
@@ -384,6 +462,35 @@ def check_link_safety(url: str) -> dict:
                 result["verified_by"].append("Google Web Risk")
         except Exception as e:
             result["api_error_wr"] = str(e)
+
+    # ── Camada 7: VirusTotal ─────────────────────────────────────────────────────
+    if _HAS_VT and result["status"] != "Perigoso":
+        try:
+            vt = vt_check_url(analysis_url)
+            result["virustotal"] = vt
+            if vt.get("available") and vt.get("risk_score", 0) > 0:
+                result["score_bonus"] += vt["risk_score"]
+                vt_summary = (
+                    f"VirusTotal: {vt['verdict']} — "
+                    f"{vt['malicious']}/{vt['total_engines']} motores"
+                )
+                if vt["threat_names"]:
+                    vt_summary += f" ({', '.join(vt['threat_names'][:2])})"
+                result["heuristic_reasons"].append(vt_summary)
+
+                if vt["verdict"] == "Malicioso":
+                    result["status"] = "Perigoso"
+                    result["threat_type"] = (
+                        ", ".join(vt["threat_names"][:2]) if vt["threat_names"]
+                        else "VirusTotal: Malicioso"
+                    )
+                    result["score_bonus"] = max(result["score_bonus"], 8)
+                    result["verified_by"].append("VirusTotal")
+                elif vt["verdict"] == "Suspeito" and "Suspeito" not in result["status"]:
+                    result["status"] = "Suspeito — Médio Risco"
+                    result["verified_by"].append("VirusTotal")
+        except Exception as e:
+            logger.warning(f"VirusTotal erro: {e}")
 
     return result
 
@@ -436,7 +543,7 @@ def analyze_message(text: str, phone_number: str = None, image_b64: str = None, 
     1. Normaliza texto
     2. Detecta padrões com pesos
     3. Verifica blacklist
-    4. Verifica links (heurística + APIs)
+    4. Verifica links (heurística + APIs + VT + WHOIS + expansão)
     5. Predição ML — usa texto E imagem directamente se OCR falhou
     """
     meta = preprocess(text) if text.strip() else {
@@ -462,7 +569,7 @@ def analyze_message(text: str, phone_number: str = None, image_b64: str = None, 
             if "Número na blacklist" not in detected_patterns:
                 detected_patterns.append("Número na blacklist")
 
-    # Verificar links — heurística + APIs
+    # Verificar links — 7 camadas
     link_results = {}
     for link in extract_links(text):
         link_check = check_link_safety(link)
@@ -486,14 +593,21 @@ def analyze_message(text: str, phone_number: str = None, image_b64: str = None, 
             if "Alto Risco" in str(link_check.get("status", "")) and "Link suspeito (análise heurística)" not in detected_patterns:
                 detected_patterns.append("Link suspeito (análise heurística)")
 
+            # Sinalizar domínio muito recente (WHOIS)
+            whois = link_check.get("whois", {})
+            if whois.get("risk_score", 0) >= 5 and "Domínio recém-criado (WHOIS)" not in detected_patterns:
+                detected_patterns.append("Domínio recém-criado (WHOIS)")
+
+            # Sinalizar detecção VirusTotal
+            vt = link_check.get("virustotal", {})
+            if vt.get("verdict") == "Malicioso" and "Malware confirmado (VirusTotal)" not in detected_patterns:
+                detected_patterns.append("Malware confirmado (VirusTotal)")
+                risk_type = "Golpe Financeiro / Phishing"
+
     # Predição ML — passa imagem se texto for insuficiente
-    # Se o texto for curto (OCR falhou parcialmente), o Gemini analisa a imagem directamente
     use_image = image_b64 and len(normalized.split()) < 5
     ml_results = predict_all(normalized, image_b64=image_b64 if use_image else None, image_mime=image_mime)
 
-    # Usar decisão ML se:
-    # - score baixo (padrões não detectaram nada)
-    # - OU texto insuficiente mas imagem disponível
     ml_decision = ml_results.get("final_decision")
     if ml_decision and ml_decision not in ("Baixo ou Nenhum Risco", "Mensagem Normal / Segura"):
         if final_score < 4 or (use_image and final_score == 0):
@@ -503,7 +617,6 @@ def analyze_message(text: str, phone_number: str = None, image_b64: str = None, 
             if "Padrão detectado pelo ML" not in detected_patterns:
                 detected_patterns.append("Padrão detectado pelo ML")
         elif final_score >= 4 and risk_type == "Baixo ou Nenhum Risco":
-            # ML confirma risco que os padrões já detectaram
             risk_type = ml_decision
 
     # Se Gemini detectou texto na imagem e não tínhamos texto, actualiza
